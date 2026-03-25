@@ -10,3 +10,4 @@ config/
 *.mp3
 *.db
 .DS_Store
+.venv/
