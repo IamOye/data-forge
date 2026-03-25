@@ -1,0 +1,13 @@
+[33m6411e9a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Word-by-word captions with gold highlight, caption render optimization, b-roll famous figures, CTA cleanup — 470+ tests passing
+[33m5af0024[m Remove credentials from tracking — covered by .gitignore
+[33m76bbf4a[m CTA pipeline complete — Gumroad links, overlay, metadata tags, auto token refresh — 470 tests passing
+[33me656e82[m Full pipeline live — first video uploaded to Money Heresy
+[33ma3d2774[m Improve video quality — multi broll, crossfades, AI keyword matching, Josh voice
+[33m5eaf214[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Add verbatim CTA validation with auto-correction
+[33ma3d730a[m Target Western audience in hook and script generators
+[33m0edf84f[m Pure ffmpeg fast render path — 43s export vs 16 min moviepy baseline
+[33mfceca70[m Caption padding fix, famous figures b-roll, remove link-in-description, render optimization
+[33m6411e9a[m Word-by-word captions with gold highlight, caption render optimization, b-roll famous figures, CTA cleanup — 470+ tests passing
+[33m5af0024[m Remove credentials from tracking — covered by .gitignore
+[33m76bbf4a[m CTA pipeline complete — Gumroad links, overlay, metadata tags, auto token refresh — 470 tests passing
+[33me656e82[m Full pipeline live — first video uploaded to Money Heresy

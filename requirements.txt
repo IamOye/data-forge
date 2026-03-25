@@ -1,0 +1,22 @@
+# Infrastructure
+APScheduler==3.10.4
+python-telegram-bot==20.7
+gspread==6.0.2
+google-auth==2.28.0
+google-auth-oauthlib==1.2.0
+google-api-python-client==2.118.0
+
+# Content generation
+anthropic==0.21.3
+elevenlabs==1.1.2
+Pillow==10.2.0
+
+# Data sources
+yfinance==0.2.37
+fredapi==0.5.2
+matplotlib==3.8.3
+pandas==2.2.1
+requests==2.31.0
+
+# Utilities
+python-dotenv==1.0.1

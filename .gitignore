@@ -1,0 +1,12 @@
+.env
+*.pyc
+__pycache__/
+data/processed/
+data/raw/
+assets/fonts/
+config/
+*.mp4
+*.wav
+*.mp3
+*.db
+.DS_Store

@@ -1,0 +1,29 @@
+# Dependencies
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Data files (can be large)
+data/raw/
+data/processed/*.db
+logs/
+
+# Sensitive
+.env
+*.env
+*.pem
+*.key
+.credentials.json
+
+# IDE
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.egg-info/
