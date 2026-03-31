@@ -20,6 +20,11 @@ Usage:
         print(s.slot, s.story_type, batch[s.data_point_index].metric_name)
 """
 
+import sys
+import os
+# Ensure project root is in path so "from src.x import" works on Railway
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
 import logging
 import os

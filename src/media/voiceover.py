@@ -10,8 +10,12 @@ Usage:
     print(result.duration_seconds)
 """
 
-import logging
+import sys
 import os
+# Ensure project root is in path so "from src.x import" works on Railway
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone

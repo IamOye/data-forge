@@ -20,10 +20,13 @@ Usage:
     python src/scheduler.py --test     # run startup checks, print schedule, exit
 """
 
-import logging
-import os
-import sqlite3
 import sys
+import os
+# Ensure project root is in path so "from src.x import" works on Railway
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import logging
+import sqlite3
 import threading
 import time
 from datetime import date, datetime, timezone

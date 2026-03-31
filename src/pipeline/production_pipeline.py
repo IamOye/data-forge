@@ -23,6 +23,11 @@ Usage:
     print(result)  # {success, story_id, video_id, youtube_url, error}
 """
 
+import sys
+import os
+# Ensure project root is in path so "from src.x import" works on Railway
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import base64
 import json
 import logging
