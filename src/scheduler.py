@@ -312,14 +312,16 @@ def _setup_telegram_bot() -> threading.Thread | None:
         return None
 
     def _run_bot() -> None:
-        """Run the Telegram bot in a blocking loop (runs in a thread)."""
+        """Run the Telegram bot with a manual async loop (no signal handlers)."""
         import asyncio
-        asyncio.set_event_loop(asyncio.new_event_loop())
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
         try:
             from telegram import Update
             from telegram.ext import (
-                ApplicationBuilder,
+                Application,
                 CommandHandler,
                 ContextTypes,
             )
@@ -409,15 +411,31 @@ def _setup_telegram_bot() -> threading.Thread | None:
             except Exception as e:
                 await update.message.reply_text(f"Error: {e}")
 
-        app = ApplicationBuilder().token(bot_token).build()
-        app.add_handler(CommandHandler("queue", cmd_queue))
-        app.add_handler(CommandHandler("stats", cmd_stats))
-        app.add_handler(CommandHandler("quota", cmd_quota))
-        app.add_handler(CommandHandler("refresh", cmd_refresh))
-        app.add_handler(CommandHandler("skip", cmd_skip))
+        async def run() -> None:
+            """Initialize, start, and poll without signal handlers."""
+            app = Application.builder().token(bot_token).build()
+            app.add_handler(CommandHandler("queue", cmd_queue))
+            app.add_handler(CommandHandler("stats", cmd_stats))
+            app.add_handler(CommandHandler("quota", cmd_quota))
+            app.add_handler(CommandHandler("refresh", cmd_refresh))
+            app.add_handler(CommandHandler("skip", cmd_skip))
 
-        logger.info("[dataforge] Telegram bot starting...")
-        app.run_polling(drop_pending_updates=True)
+            await app.initialize()
+            await app.start()
+            await app.updater.start_polling(drop_pending_updates=True)
+
+            logger.info("[dataforge] Telegram bot started (manual async polling)")
+
+            # Keep running until stopped
+            while True:
+                await asyncio.sleep(3600)
+
+        try:
+            loop.run_until_complete(run())
+        except Exception as e:
+            logger.error("[dataforge] Telegram bot error: %s", e)
+        finally:
+            loop.close()
 
     thread = threading.Thread(target=_run_bot, daemon=True, name="telegram-bot")
     return thread
