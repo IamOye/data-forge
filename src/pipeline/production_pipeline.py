@@ -437,18 +437,25 @@ class ProductionPipeline:
 
             # --- Step 1: Fetch daily movers ---
             logger.info("[dataforge] Step 1: Fetching daily movers...")
-            try:
-                from src.data.data_fetcher import DataFetcher
+            from src.data.data_fetcher import DataFetcher
+            fetcher = DataFetcher()
 
-                fetcher = DataFetcher()
+            try:
                 movers = fetcher.fetch_daily_movers(top_n=5)
             except Exception as e:
-                logger.error("[dataforge] Step 1 failed: %s", e, exc_info=True)
-                result["error"] = f"Step 1 fetch_daily_movers failed: {e}"
-                return result
+                logger.error("[dataforge] Step 1 fetch_daily_movers failed: %s", e, exc_info=True)
+                movers = []
 
             if not movers:
-                result["error"] = "No movers returned from DataFetcher (yfinance + polygon both empty)"
+                logger.warning("[dataforge] Stock data unavailable -- using crypto movers as fallback")
+                try:
+                    movers = fetcher.fetch_crypto_movers(top_n=5)
+                except Exception as e:
+                    logger.error("[dataforge] Step 1 fetch_crypto_movers also failed: %s", e, exc_info=True)
+                    movers = []
+
+            if not movers:
+                result["error"] = "No movers from any source (yfinance, polygon, coingecko all empty)"
                 logger.error("[dataforge] %s", result["error"])
                 return result
 
@@ -568,7 +575,7 @@ class ProductionPipeline:
                     currency=top_mover.currency if hasattr(top_mover, "currency") else "$",
                     duration_sec=video_duration,
                     story_id=story_id,
-                    source_credit=f"Source: {data_source}",
+                    source_credit="Source: CoinGecko" if data_source == "coingecko" else f"Source: {data_source}",
                 )
                 logger.info(
                     "[dataforge] Step 6 complete: %.1fs, path=%s",
