@@ -219,14 +219,60 @@ def run_startup_checks() -> None:
         logger.info("[dataforge] Startup: Database exists at %s", DB_PATH)
         checks_passed += 1
     else:
-        logger.warning("[dataforge] Startup: Database not found at %s -- creating via init_db", DB_PATH)
+        logger.warning("[dataforge] Startup: Database not found at %s -- creating inline", DB_PATH)
         try:
-            from scripts.init_db import init_db
-            init_db(DB_PATH)
+            Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(DB_PATH)
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS data_stories (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    story_id      TEXT UNIQUE NOT NULL,
+                    story_type    TEXT NOT NULL,
+                    data_source   TEXT NOT NULL,
+                    metric_name   TEXT NOT NULL,
+                    current_value REAL,
+                    prev_value    REAL,
+                    pct_change    REAL,
+                    script        TEXT,
+                    hook          TEXT,
+                    status        TEXT DEFAULT 'QUEUED',
+                    created_at    TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS video_log (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    story_id          TEXT NOT NULL,
+                    youtube_video_id  TEXT,
+                    youtube_title     TEXT,
+                    youtube_url       TEXT,
+                    upload_status     TEXT DEFAULT 'PENDING',
+                    views_24h         INTEGER,
+                    uploaded_at       TEXT
+                );
+                CREATE TABLE IF NOT EXISTS chart_cache (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cache_key   TEXT UNIQUE NOT NULL,
+                    chart_path  TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    expires_at  TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT
+                );
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO settings (key, value)
+                VALUES
+                    ('youtube_units_used_today', '0'),
+                    ('youtube_units_reset_date', ''),
+                    ('dataforge_version', '0.1.0')
+            """)
+            conn.commit()
+            conn.close()
             checks_passed += 1
             logger.info("[dataforge] Startup: Database created at %s", DB_PATH)
         except Exception as e:
-            logger.error("[dataforge] Startup: init_db failed: %s", e)
+            logger.error("[dataforge] Startup: DB creation failed: %s", e)
 
     # 4. yfinance smoke test
     try:
@@ -268,6 +314,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
     def _run_bot() -> None:
         """Run the Telegram bot in a blocking loop (runs in a thread)."""
         import asyncio
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
         try:
             from telegram import Update
