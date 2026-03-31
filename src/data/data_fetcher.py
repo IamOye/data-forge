@@ -142,12 +142,23 @@ class DataFetcher:
                     continue
 
             results.sort(key=lambda x: abs(x.pct_change), reverse=True)
-            logger.info('[dataforge] fetch_daily_movers: %d movers found', len(results))
-            return results[:top_n]
+            logger.info('[dataforge] fetch_daily_movers: %d movers from yfinance', len(results))
+
+            if results:
+                logger.info('[dataforge] fetch_daily_movers: using yfinance')
+                return results[:top_n]
+
+            # yfinance returned 0 results — fall back to Polygon.io
+            logger.warning('[dataforge] fetch_daily_movers: yfinance returned 0 results — trying Polygon.io')
+            return self.fetch_polygon_movers(top_n=top_n)
 
         except Exception as e:
-            logger.error('[dataforge] fetch_daily_movers failed: %s', e)
-            return []
+            logger.error('[dataforge] fetch_daily_movers: yfinance failed: %s — trying Polygon.io', e)
+            try:
+                return self.fetch_polygon_movers(top_n=top_n)
+            except Exception as e2:
+                logger.error('[dataforge] fetch_daily_movers: Polygon.io also failed: %s', e2)
+                return []
 
     def fetch_polygon_backup(self, ticker: str) -> 'DataPoint | None':
         """
@@ -190,6 +201,72 @@ class DataFetcher:
         except Exception as e:
             logger.error('[dataforge] fetch_polygon_backup failed for %s: %s', ticker, e)
             return None
+
+    def fetch_polygon_movers(self, top_n: int = 5) -> list:
+        """
+        Fetch top movers from Polygon.io gainers + losers snapshots.
+        Used as fallback when yfinance is blocked (e.g. on Railway).
+
+        Returns:
+            list[DataPoint] sorted by abs(pct_change) descending.
+        """
+        if not POLYGON_API_KEY:
+            logger.warning('[dataforge] POLYGON_API_KEY not set — cannot fetch Polygon movers')
+            return []
+
+        results = []
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+        for direction in ('gainers', 'losers'):
+            try:
+                url = f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/{direction}'
+                resp = requests.get(
+                    url,
+                    params={'apiKey': POLYGON_API_KEY},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                tickers = data.get('tickers', [])
+
+                for t in tickers:
+                    try:
+                        ticker_name = t.get('ticker', '')
+                        day_data = t.get('day', {})
+                        prev_day = t.get('prevDay', {})
+                        current = float(day_data.get('c', 0))
+                        prev = float(prev_day.get('c', 0))
+                        if prev == 0 or current == 0:
+                            continue
+                        pct = ((current - prev) / prev) * 100
+                        dp = DataPoint(
+                            metric_name=f'{ticker_name} stock price',
+                            current_value=round(current, 2),
+                            prev_value=round(prev, 2),
+                            pct_change=round(pct, 2),
+                            data_source='polygon',
+                            date=today,
+                            currency='USD',
+                            extra_meta={'ticker': ticker_name, 'direction': direction},
+                        )
+                        if self.validate_data_point(dp):
+                            results.append(dp)
+                    except Exception as e:
+                        logger.warning('[dataforge] Polygon parse error for ticker: %s', e)
+                        continue
+
+                logger.info('[dataforge] fetch_polygon_movers: %d %s fetched', len(tickers), direction)
+
+            except Exception as e:
+                logger.error('[dataforge] fetch_polygon_movers %s failed: %s', direction, e)
+
+        results.sort(key=lambda x: abs(x.pct_change), reverse=True)
+        logger.info('[dataforge] fetch_polygon_movers: %d total movers, returning top %d', len(results), top_n)
+
+        if results:
+            logger.info('[dataforge] fetch_daily_movers: using polygon')
+
+        return results[:top_n]
 
     # ------------------------------------------------------------------
     # FRED — US economic time-series
@@ -618,10 +695,15 @@ def test_data_fetcher():
     logging.basicConfig(level=logging.INFO)
     fetcher = DataFetcher()
 
-    print('\n--- Daily Movers (yfinance) ---')
+    print('\n--- Daily Movers (yfinance -> polygon fallback) ---')
     movers = fetcher.fetch_daily_movers(top_n=3)
-    for m in movers:
-        print(f'  {m.metric_name}: ${m.current_value} ({m.pct_change:+.2f}%)')
+    if movers:
+        source = movers[0].data_source
+        print(f'  Source used: {source}')
+        for m in movers:
+            print(f'  {m.metric_name}: ${m.current_value} ({m.pct_change:+.2f}%)')
+    else:
+        print('  No movers returned from any source')
 
     print('\n--- FRED: CPI (last 6 periods) ---')
     cpi = fetcher.fetch_fred_series('CPIAUCSL', periods=6)

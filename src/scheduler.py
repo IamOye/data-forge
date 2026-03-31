@@ -100,7 +100,7 @@ def data_refresh_job() -> None:
         fetcher = DataFetcher()
         total = 0
 
-        # Stock movers
+        # Stock movers (yfinance -> polygon fallback)
         try:
             movers = fetcher.fetch_daily_movers(top_n=10)
             DATA_CACHE["movers"] = movers
@@ -119,6 +119,11 @@ def data_refresh_job() -> None:
         except Exception as e:
             logger.error("[dataforge] data_refresh: crypto movers failed: %s", e)
             DATA_CACHE.setdefault("crypto", [])
+
+        # Fallback: if stock movers still empty, use crypto movers instead
+        if not DATA_CACHE.get("movers") and DATA_CACHE.get("crypto"):
+            logger.warning("[dataforge] data_refresh_job: using crypto movers as fallback")
+            DATA_CACHE["movers"] = DATA_CACHE["crypto"]
 
         # CPI data from FRED
         try:
