@@ -419,6 +419,35 @@ def _setup_telegram_bot() -> threading.Thread | None:
             except Exception as e:
                 await update.message.reply_text(f"Error: {e}")
 
+        async def cmd_produce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            """Trigger a manual production run (kinetic)."""
+            try:
+                await update.message.reply_text("Starting manual production run (kinetic)...")
+                t = threading.Thread(
+                    target=production_job,
+                    args=("manual", "kinetic"),
+                    daemon=True,
+                    name="manual-produce",
+                )
+                t.start()
+                await update.message.reply_text("Production job started. Check back in 2-3 minutes.")
+            except Exception as e:
+                await update.message.reply_text(f"Error: {e}")
+
+        async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            """Show available commands."""
+            help_text = (
+                "DataForge Bot Commands:\n"
+                "  /queue   - Today's story queue\n"
+                "  /stats   - Total uploads and views\n"
+                "  /quota   - YouTube quota usage\n"
+                "  /refresh - Refresh data cache\n"
+                "  /produce - Manual production run (kinetic)\n"
+                "  /skip    - Skip next queued story\n"
+                "  /help    - Show this message"
+            )
+            await update.message.reply_text(help_text)
+
         async def run() -> None:
             """Initialize, start, and poll without signal handlers."""
             app = Application.builder().token(bot_token).build()
@@ -426,7 +455,10 @@ def _setup_telegram_bot() -> threading.Thread | None:
             app.add_handler(CommandHandler("stats", cmd_stats))
             app.add_handler(CommandHandler("quota", cmd_quota))
             app.add_handler(CommandHandler("refresh", cmd_refresh))
+            app.add_handler(CommandHandler("produce", cmd_produce))
             app.add_handler(CommandHandler("skip", cmd_skip))
+            app.add_handler(CommandHandler("help", cmd_help))
+            app.add_handler(CommandHandler("start", cmd_help))
 
             await app.initialize()
             await app.start()
