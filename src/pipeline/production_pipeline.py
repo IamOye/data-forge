@@ -334,23 +334,18 @@ def _upload_to_youtube(
 # Telegram notification
 # ---------------------------------------------------------------------------
 
-def _send_telegram_notification(
-    story_id: str,
-    metric_name: str,
-    youtube_url: str,
-) -> None:
-    """Send a Telegram notification about a successful upload."""
+def _send_telegram(message: str) -> None:
+    """Send a Telegram message using the HTTP API (works in any thread)."""
     try:
-        from src.notifications.telegram_notifier import TelegramNotifier
-        notifier = TelegramNotifier()
-        message = (
-            f"📊 DataForge upload complete\n"
-            f"Story: {story_id}\n"
-            f"Metric: {metric_name}\n"
-            f"URL: {youtube_url}"
-        )
-        notifier.send(message)
-        logger.info("[dataforge] Telegram notification sent for %s", story_id)
+        import requests
+        bot_token = os.environ.get("DATAFORGE_TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("DATAFORGE_TELEGRAM_CHAT_ID", "")
+        if not bot_token or not chat_id:
+            logger.info("[dataforge] Telegram not configured (missing token or chat_id)")
+            return
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
+        logger.info("[dataforge] Telegram notification sent")
     except Exception as e:
         logger.warning("[dataforge] Telegram notification failed: %s", e)
 
@@ -441,13 +436,19 @@ class ProductionPipeline:
             )
 
             # --- Step 1: Fetch daily movers ---
-            from src.data.data_fetcher import DataFetcher
+            logger.info("[dataforge] Step 1: Fetching daily movers...")
+            try:
+                from src.data.data_fetcher import DataFetcher
 
-            fetcher = DataFetcher()
-            movers = fetcher.fetch_daily_movers(top_n=5)
+                fetcher = DataFetcher()
+                movers = fetcher.fetch_daily_movers(top_n=5)
+            except Exception as e:
+                logger.error("[dataforge] Step 1 failed: %s", e, exc_info=True)
+                result["error"] = f"Step 1 fetch_daily_movers failed: {e}"
+                return result
 
             if not movers:
-                result["error"] = "No movers returned from DataFetcher"
+                result["error"] = "No movers returned from DataFetcher (yfinance + polygon both empty)"
                 logger.error("[dataforge] %s", result["error"])
                 return result
 
@@ -459,163 +460,232 @@ class ProductionPipeline:
             data_source = top_mover.data_source
 
             logger.info(
-                "[dataforge] Top mover: %s (%.2f → %.2f, %+.2f%%)",
-                metric_name, prev_value, current_value, pct_change,
+                "[dataforge] Step 1 complete: source=%s, top_mover=%s (%.2f -> %.2f, %+.2f%%), %d total movers",
+                data_source, metric_name, prev_value, current_value, pct_change, len(movers),
             )
 
             # --- Step 2: Fetch news context ---
-            news_context = fetcher.fetch_news_context(metric_name, max_results=3)
-            news_headlines = [item if isinstance(item, str) else str(item) for item in news_context]
-            logger.info("[dataforge] News context: %d headlines", len(news_headlines))
+            logger.info("[dataforge] Step 2: Fetching news context for '%s'...", metric_name)
+            try:
+                news_context = fetcher.fetch_news_context(metric_name, max_results=3)
+                news_headlines = [item if isinstance(item, str) else str(item) for item in news_context]
+                logger.info("[dataforge] Step 2 complete: %d headlines fetched", len(news_headlines))
+            except Exception as e:
+                logger.error("[dataforge] Step 2 failed: %s", e, exc_info=True)
+                news_headlines = []
+                logger.warning("[dataforge] Step 2: continuing with 0 headlines")
 
             # --- Step 3: Generate script ---
-            from src.content.script_adapter import ScriptAdapter
+            logger.info("[dataforge] Step 3: Generating script via ScriptAdapter...")
+            try:
+                from src.content.script_adapter import ScriptAdapter
 
-            script_adapter = ScriptAdapter()
-            script_result = script_adapter.generate(
-                metric_name=metric_name,
-                current_value=current_value,
-                prev_value=prev_value,
-                pct_change=pct_change,
-                data_source=data_source,
-                news_context=news_headlines,
-                story_type="kinetic",
-            )
+                script_adapter = ScriptAdapter()
+                script_result = script_adapter.generate(
+                    metric_name=metric_name,
+                    current_value=current_value,
+                    prev_value=prev_value,
+                    pct_change=pct_change,
+                    data_source=data_source,
+                    news_context=news_headlines,
+                    story_type="kinetic",
+                )
+            except Exception as e:
+                logger.error("[dataforge] Step 3 failed: %s", e, exc_info=True)
+                result["error"] = f"Step 3 script generation failed: {e}"
+                return result
 
             if not script_result.is_valid:
                 result["error"] = f"Script validation failed: {script_result.validation_errors}"
-                logger.error("[dataforge] %s", result["error"])
+                logger.error("[dataforge] Step 3 validation failed: %s", result["error"])
                 return result
 
             logger.info(
-                "[dataforge] Script generated: %d words, valid=%s",
-                script_result.word_count, script_result.is_valid,
+                "[dataforge] Step 3 complete: %d words, valid=%s, hook='%s'",
+                script_result.word_count, script_result.is_valid, script_result.hook[:80],
             )
 
             # --- Step 4: Save story to DB ---
-            _save_story(
-                db_path=self.db_path,
-                story_id=story_id,
-                story_type="kinetic",
-                data_source=data_source,
-                metric_name=metric_name,
-                current_value=current_value,
-                prev_value=prev_value,
-                pct_change=pct_change,
-                script=script_result.full_script,
-                hook=script_result.hook,
-            )
+            logger.info("[dataforge] Step 4: Saving story to DB...")
+            try:
+                _save_story(
+                    db_path=self.db_path,
+                    story_id=story_id,
+                    story_type="kinetic",
+                    data_source=data_source,
+                    metric_name=metric_name,
+                    current_value=current_value,
+                    prev_value=prev_value,
+                    pct_change=pct_change,
+                    script=script_result.full_script,
+                    hook=script_result.hook,
+                )
+                logger.info("[dataforge] Step 4 complete: story %s saved", story_id)
+            except Exception as e:
+                logger.error("[dataforge] Step 4 failed: %s", e, exc_info=True)
+                result["error"] = f"Step 4 DB save failed: {e}"
+                return result
 
             # --- Step 5: Generate voiceover ---
-            from src.media.voiceover import VoiceoverGenerator
+            logger.info("[dataforge] Step 5: Generating voiceover via ElevenLabs...")
+            try:
+                from src.media.voiceover import VoiceoverGenerator
 
-            vo_gen = VoiceoverGenerator(output_dir=RAW_DIR)
-            vo_result = vo_gen.generate(
-                script_dict=script_result.to_dict(),
-                topic_id=story_id,
-                category="money",
-            )
+                vo_gen = VoiceoverGenerator(output_dir=RAW_DIR)
+                vo_result = vo_gen.generate(
+                    script_dict=script_result.to_dict(),
+                    topic_id=story_id,
+                    category="money",
+                )
+            except Exception as e:
+                logger.error("[dataforge] Step 5 failed: %s", e, exc_info=True)
+                _update_story_status(self.db_path, story_id, "VO_FAILED")
+                result["error"] = f"Step 5 voiceover failed: {e}"
+                return result
 
             if not vo_result.is_valid:
                 _update_story_status(self.db_path, story_id, "VO_FAILED")
-                result["error"] = f"Voiceover failed: {vo_result.validation_errors}"
-                logger.error("[dataforge] %s", result["error"])
+                result["error"] = f"Voiceover validation failed: {vo_result.validation_errors}"
+                logger.error("[dataforge] Step 5 validation failed: %s", result["error"])
                 return result
 
             logger.info(
-                "[dataforge] Voiceover: %.1fs, path=%s",
+                "[dataforge] Step 5 complete: %.1fs duration, path=%s",
                 vo_result.duration_seconds, vo_result.audio_path,
             )
 
             # --- Step 6: Render kinetic video ---
-            from src.media.kinetic_renderer import KineticRenderer
+            logger.info("[dataforge] Step 6: Rendering kinetic video...")
+            try:
+                from src.media.kinetic_renderer import KineticRenderer
 
-            renderer = KineticRenderer(output_dir=RAW_DIR)
-            video_duration = vo_result.duration_seconds + 2.0
-            video_path = renderer.render(
-                value=current_value,
-                prev_value=prev_value,
-                label=metric_name,
-                currency=top_mover.currency if hasattr(top_mover, "currency") else "$",
-                duration_sec=video_duration,
-                story_id=story_id,
-                source_credit=f"Source: {data_source}",
-            )
-
-            logger.info(
-                "[dataforge] Video rendered: %.1fs, path=%s",
-                video_duration, video_path,
-            )
+                renderer = KineticRenderer(output_dir=RAW_DIR)
+                video_duration = vo_result.duration_seconds + 2.0
+                video_path = renderer.render(
+                    value=current_value,
+                    prev_value=prev_value,
+                    label=metric_name,
+                    currency=top_mover.currency if hasattr(top_mover, "currency") else "$",
+                    duration_sec=video_duration,
+                    story_id=story_id,
+                    source_credit=f"Source: {data_source}",
+                )
+                logger.info(
+                    "[dataforge] Step 6 complete: %.1fs, path=%s",
+                    video_duration, video_path,
+                )
+            except Exception as e:
+                logger.error("[dataforge] Step 6 failed: %s", e, exc_info=True)
+                _update_story_status(self.db_path, story_id, "RENDER_FAILED")
+                result["error"] = f"Step 6 render failed: {e}"
+                return result
 
             # --- Step 7: Merge audio + video ---
-            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            final_path = str(OUTPUT_DIR / f"{story_id}_final.mp4")
-            _merge_audio_video(video_path, vo_result.audio_path, final_path)
-            logger.info("[dataforge] Final video: %s", final_path)
+            logger.info("[dataforge] Step 7: Merging audio + video...")
+            try:
+                OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+                final_path = str(OUTPUT_DIR / f"{story_id}_final.mp4")
+                _merge_audio_video(video_path, vo_result.audio_path, final_path)
+                logger.info("[dataforge] Step 7 complete: %s", final_path)
+            except Exception as e:
+                logger.error("[dataforge] Step 7 failed: %s", e, exc_info=True)
+                _update_story_status(self.db_path, story_id, "MERGE_FAILED")
+                result["error"] = f"Step 7 merge failed: {e}"
+                return result
 
             # --- Step 8: Upload to YouTube ---
-            video_title = script_result.hook[:100]
-            video_description = (
-                f"{script_result.full_script}\n\n"
-                f"Source: {data_source}\n"
-                f"#data #finance #shorts"
-            )
-            video_tags = ["data", "finance", "shorts", metric_name.lower()]
+            logger.info("[dataforge] Step 8: Uploading to YouTube...")
+            try:
+                video_title = script_result.hook[:100]
+                video_description = (
+                    f"{script_result.full_script}\n\n"
+                    f"Source: {data_source}\n"
+                    f"#data #finance #shorts"
+                )
+                video_tags = ["data", "finance", "shorts", metric_name.lower()]
 
-            video_id, youtube_url = _upload_to_youtube(
-                video_path=final_path,
-                title=video_title,
-                description=video_description,
-                tags=video_tags,
-            )
+                video_id, youtube_url = _upload_to_youtube(
+                    video_path=final_path,
+                    title=video_title,
+                    description=video_description,
+                    tags=video_tags,
+                )
+                logger.info("[dataforge] Step 8 complete: video_id=%s, url=%s", video_id, youtube_url)
+            except Exception as e:
+                logger.error("[dataforge] Step 8 failed: %s", e, exc_info=True)
+                _update_story_status(self.db_path, story_id, "UPLOAD_FAILED")
+                result["error"] = f"Step 8 upload failed: {e}"
+                _send_telegram(f"DataForge UPLOAD FAILED\nStory: {story_id}\nError: {e}")
+                return result
 
             # --- Step 9: Record quota ---
-            _record_quota(self.db_path, UPLOAD_COST + METADATA_COST)
+            logger.info("[dataforge] Step 9: Recording quota...")
+            try:
+                _record_quota(self.db_path, UPLOAD_COST + METADATA_COST)
+                logger.info("[dataforge] Step 9 complete")
+            except Exception as e:
+                logger.error("[dataforge] Step 9 failed: %s", e, exc_info=True)
 
             # --- Step 10: Update DB ---
-            _update_story_status(self.db_path, story_id, "UPLOADED")
-            conn = sqlite3.connect(self.db_path)
+            logger.info("[dataforge] Step 10: Updating DB records...")
             try:
-                conn.execute(
-                    """INSERT INTO video_log
-                       (story_id, youtube_video_id, youtube_title, youtube_url,
-                        upload_status, uploaded_at)
-                       VALUES (?, ?, ?, ?, 'UPLOADED', ?)""",
-                    (
-                        story_id, video_id, video_title, youtube_url,
-                        datetime.now(timezone.utc).isoformat(),
-                    ),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+                _update_story_status(self.db_path, story_id, "UPLOADED")
+                conn = sqlite3.connect(self.db_path)
+                try:
+                    conn.execute(
+                        """INSERT INTO video_log
+                           (story_id, youtube_video_id, youtube_title, youtube_url,
+                            upload_status, uploaded_at)
+                           VALUES (?, ?, ?, ?, 'UPLOADED', ?)""",
+                        (
+                            story_id, video_id, video_title, youtube_url,
+                            datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                logger.info("[dataforge] Step 10 complete")
+            except Exception as e:
+                logger.error("[dataforge] Step 10 failed: %s", e, exc_info=True)
 
             # --- Step 11: GSheet sync ---
+            logger.info("[dataforge] Step 11: GSheet sync...")
             try:
                 from src.crawler.gsheet_sync import GSheetSync
                 gsheet = GSheetSync()
                 gsheet.mark_uploaded(story_id, video_id, youtube_url)
+                logger.info("[dataforge] Step 11 complete")
             except Exception as e:
-                logger.warning("[dataforge] GSheet sync failed: %s", e)
+                logger.warning("[dataforge] Step 11 GSheet sync failed (non-fatal): %s", e)
 
             # --- Step 12: Telegram notification ---
-            _send_telegram_notification(story_id, metric_name, youtube_url)
+            logger.info("[dataforge] Step 12: Sending Telegram notification...")
+            _send_telegram(
+                f"DataForge upload complete\n"
+                f"Story: {story_id}\n"
+                f"Metric: {metric_name}\n"
+                f"URL: {youtube_url}"
+            )
+            logger.info("[dataforge] Step 12 complete")
 
             # --- Done ---
             result["success"] = True
             result["video_id"] = video_id
             result["youtube_url"] = youtube_url
             logger.info(
-                "[dataforge] Production complete: %s → %s", story_id, youtube_url
+                "[dataforge] Production complete: %s -> %s (all 12 steps passed)",
+                story_id, youtube_url,
             )
 
         except Exception as e:
             result["error"] = str(e)
-            logger.exception("[dataforge] Pipeline failed: %s", e)
+            logger.error("[dataforge] Pipeline crashed unexpectedly: %s", e, exc_info=True)
             try:
                 _update_story_status(self.db_path, story_id, "FAILED")
             except Exception:
                 pass
+            _send_telegram(f"DataForge PIPELINE CRASHED\nStory: {story_id}\nError: {e}")
 
         return result
 
