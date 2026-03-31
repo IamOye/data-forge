@@ -109,9 +109,17 @@ def run_oauth_flow() -> None:
     print("\nScopes authorised:")
     for s in SCOPES:
         print(f"  - {s}")
+
+    # Step 6: Print base64 encoded token for Railway env var
+    import base64
+    with open(TOKEN_PATH) as f:
+        token_json = f.read()
+    b64 = base64.b64encode(token_json.encode()).decode()
+    print(f"\nBase64 encoded token (for CHARTDROP_TOKEN_B64 env var):\n{b64}")
+
     print(
-        f"\nNext step: upload this file to Railway volume "
-        f"at /app/config/chartdrop_token.json"
+        f"\nNext step: set CHARTDROP_TOKEN_B64 in Railway, or upload the file "
+        f"to Railway volume at /app/config/chartdrop_token.json"
     )
 
 

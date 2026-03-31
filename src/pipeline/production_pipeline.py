@@ -23,6 +23,7 @@ Usage:
     print(result)  # {success, story_id, video_id, youtube_url, error}
 """
 
+import base64
 import json
 import logging
 import os
@@ -236,12 +237,47 @@ def _check_quota(db_path: str) -> tuple[bool, int]:
 # YouTube upload
 # ---------------------------------------------------------------------------
 
+def _load_credentials():
+    """
+    Load YouTube OAuth2 credentials.
+
+    Priority:
+      1. CHARTDROP_TOKEN_B64 env var (base64-encoded JSON token)
+      2. DATAFORGE_YOUTUBE_TOKEN_PATH env var (path to JSON file)
+
+    Returns:
+        google.oauth2.credentials.Credentials
+
+    Raises:
+        RuntimeError: If neither source is available.
+    """
+    from google.oauth2.credentials import Credentials
+
+    # 1. Try base64-encoded token from env var
+    b64 = os.environ.get("CHARTDROP_TOKEN_B64", "")
+    if b64:
+        token_data = json.loads(base64.b64decode(b64))
+        logger.info("[dataforge] Loaded YouTube credentials from CHARTDROP_TOKEN_B64")
+        return Credentials.from_authorized_user_info(token_data)
+
+    # 2. Fall back to file path
+    token_path = os.environ.get("DATAFORGE_YOUTUBE_TOKEN_PATH", "")
+    if token_path and Path(token_path).exists():
+        logger.info("[dataforge] Loaded YouTube credentials from %s", token_path)
+        return Credentials.from_authorized_user_file(token_path)
+
+    raise RuntimeError(
+        "YouTube credentials not available. "
+        "Set CHARTDROP_TOKEN_B64 (base64 JSON) or "
+        "DATAFORGE_YOUTUBE_TOKEN_PATH (file path)."
+    )
+
+
 def _upload_to_youtube(
     video_path: str,
     title: str,
     description: str,
     tags: list[str],
-    token_path: str,
 ) -> tuple[str, str]:
     """
     Upload a video to YouTube using the Data API v3.
@@ -251,16 +287,14 @@ def _upload_to_youtube(
         title:       Video title.
         description: Video description.
         tags:        List of tags.
-        token_path:  Path to the OAuth2 token JSON.
 
     Returns:
         (video_id, youtube_url)
     """
-    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
-    creds = Credentials.from_authorized_user_file(token_path)
+    creds = _load_credentials()
     youtube = build("youtube", "v3", credentials=creds)
 
     body = {
@@ -515,13 +549,6 @@ class ProductionPipeline:
             logger.info("[dataforge] Final video: %s", final_path)
 
             # --- Step 8: Upload to YouTube ---
-            token_path = os.environ.get("DATAFORGE_YOUTUBE_TOKEN_PATH", "")
-            if not token_path:
-                _update_story_status(self.db_path, story_id, "NO_TOKEN")
-                result["error"] = "DATAFORGE_YOUTUBE_TOKEN_PATH not set"
-                logger.error("[dataforge] %s", result["error"])
-                return result
-
             video_title = script_result.hook[:100]
             video_description = (
                 f"{script_result.full_script}\n\n"
@@ -535,7 +562,6 @@ class ProductionPipeline:
                 title=video_title,
                 description=video_description,
                 tags=video_tags,
-                token_path=token_path,
             )
 
             # --- Step 9: Record quota ---
