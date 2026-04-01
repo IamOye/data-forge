@@ -1,18 +1,17 @@
 """
 kinetic_renderer.py — KineticRenderer
 
-Renders a Pillow frame-by-frame animation of a number counting up or down.
+Bloomberg Terminal aesthetic kinetic number animation.
 Output: 1080x1920 MP4 (video only — audio merged by production_pipeline.py)
 
-Visual spec:
-  Background:   #0D1117
-  Primary text: #FFFFFF
-  Accent teal:  #00D4AA
-  Up green:     #26A65B
-  Down red:     #E74C3C
-  Font:         Roboto-Bold.ttf
-  Frame size:   1080 x 1920 px (strict — asserted every frame)
-  Frame rate:   30 fps
+Visual identity:
+  Bloomberg terminal meets mobile finance app.
+  Multi-layer background (base + vignette + dot grid).
+  Header/footer panel bands. Stats row. Animated underline.
+  Glow effect on hero number. Pill-shaped P&L badge.
+
+Frame size:   1080 x 1920 px (strict)
+Frame rate:   30 fps
 
 Usage:
     renderer = KineticRenderer()
@@ -46,11 +45,13 @@ FRAME_W = 1080
 FRAME_H = 1920
 FPS = 30
 BG_COLOR = (13, 17, 23)           # #0D1117
+PANEL_COLOR = (17, 24, 39)        # #111827
 TEXT_COLOR = (255, 255, 255)       # #FFFFFF
 SECONDARY_COLOR = (139, 148, 158)  # #8B949E
 ACCENT_COLOR = (0, 212, 170)      # #00D4AA
 UP_COLOR = (38, 166, 91)          # #26A65B
 DOWN_COLOR = (231, 76, 60)        # #E74C3C
+RULE_COLOR = (45, 55, 72)         # #2D3748
 
 FONT_PATH = os.environ.get(
     'FONT_PATH',
@@ -69,16 +70,59 @@ OUTPUT_DIR = Path(os.environ.get('DATAFORGE_RAW_DIR', 'data/raw'))
 
 class KineticRenderer:
     """
-    Renders a kinetic number counting animation as an MP4.
+    Renders a Bloomberg-terminal-style kinetic number animation as an MP4.
 
-    The number animates from prev_value to current_value over the first
-    60% of frames using an ease-out curve. The remaining 40% holds on
-    the final value with a subtle pulse effect.
+    Background is built once (base + vignette + dot grid) and copied per frame.
+    60% animate / 40% hold with ease-out cubic.
     """
 
     def __init__(self, output_dir: str | Path = OUTPUT_DIR) -> None:
         self.output_dir = Path(output_dir)
         self.font_path = self._resolve_font()
+        self._bg_frame = self._build_background()
+
+    # ------------------------------------------------------------------
+    # Background builder (called once)
+    # ------------------------------------------------------------------
+
+    def _build_background(self):
+        """Build the 3-layer background: base + vignette + dot grid."""
+        from PIL import Image, ImageDraw
+
+        # Layer 1 — base fill
+        bg = Image.new('RGBA', (FRAME_W, FRAME_H), (*BG_COLOR, 255))
+
+        # Layer 2 — radial vignette (concentric ellipses, dark edges)
+        vignette = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+        vdraw = ImageDraw.Draw(vignette)
+        cx, cy = FRAME_W // 2, FRAME_H // 2
+        steps = 12
+        max_rx, max_ry = FRAME_W // 2 + 100, FRAME_H // 2 + 100
+        for s in range(steps):
+            # Outer to inner
+            frac = s / steps
+            rx = int(max_rx - frac * 80 * steps)
+            ry = int(max_ry - frac * 80 * steps)
+            if rx <= 0 or ry <= 0:
+                break
+            alpha = int(200 * (1 - frac))
+            vdraw.ellipse(
+                [(cx - rx, cy - ry), (cx + rx, cy + ry)],
+                fill=(0, 0, 0, alpha),
+            )
+        bg = Image.alpha_composite(bg, vignette)
+
+        # Layer 3 — dot grid (1px dots, #FFFFFF at 6% opacity, every 48px)
+        grid = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+        gdraw = ImageDraw.Draw(grid)
+        dot_color = (255, 255, 255, 15)
+        for gx in range(0, FRAME_W, 48):
+            for gy in range(0, FRAME_H, 48):
+                gdraw.point((gx, gy), fill=dot_color)
+        bg = Image.alpha_composite(bg, grid)
+
+        logger.info('[dataforge] Background built: %dx%d with vignette + dot grid', FRAME_W, FRAME_H)
+        return bg
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,41 +142,40 @@ class KineticRenderer:
         """
         Render a kinetic number animation to MP4.
 
-        Args:
-            value:        Final (current) value to animate to.
-            prev_value:   Starting value.
-            label:        Label text shown below the number (e.g. 'Apple Market Cap').
-            currency:     Currency symbol prefix (e.g. '$', '€', '₦', '').
-            duration_sec: Total video duration in seconds.
-            accent_color: Hex colour for the accent bar (default teal).
-            story_id:     Used for output filename.
-            source_credit: Small attribution text bottom-right.
-
         Returns:
             str: Path to the rendered MP4 file.
         """
-        try:
-            from PIL import Image, ImageDraw
-        except ImportError:
-            raise RuntimeError('Pillow not installed. Run: pip install Pillow')
+        from PIL import Image, ImageDraw
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         total_frames = int(duration_sec * FPS)
         animate_frames = int(total_frames * 0.60)
         hold_frames = total_frames - animate_frames
+        underline_end = int(total_frames * 0.40)
+        prev_fade_start = int(total_frames * 0.20)
+        prev_fade_end = int(total_frames * 0.30)
 
         is_up = value >= prev_value
         change_color = UP_COLOR if is_up else DOWN_COLOR
         pct_change = ((value - prev_value) / prev_value * 100) if prev_value else 0.0
+        abs_change = abs(value - prev_value)
         arrow = '\u25b2' if is_up else '\u25bc'
+        sign = '+' if is_up else '-'
 
-        # Font sizes tuned for 1920px tall frame
-        font_number = self._load_font(260)
-        font_label = self._load_font(80)
-        font_change = self._load_font(72)
-        font_small = self._load_font(44)
-        font_subtitle = self._load_font(40)
+        # Fonts tuned for 1920px frame
+        font_number = self._load_font(240)
+        font_currency = self._load_font(120)
+        font_label = self._load_font(52)
+        font_live = self._load_font(32)
+        font_pct_arrow = self._load_font(56)
+        font_pct_text = self._load_font(64)
+        font_stat_label = self._load_font(32)
+        font_stat_value = self._load_font(52)
+        font_prev_label = self._load_font(32)
+        font_prev_value = self._load_font(48)
+        font_watermark = self._load_font(36)
+        font_source = self._load_font(30)
 
         logger.info(
             '[dataforge] KineticRenderer: rendering %d frames (%dx%d) for %s',
@@ -145,146 +188,271 @@ class KineticRenderer:
             for i in range(total_frames):
                 # --- Compute animated value ---
                 if i < animate_frames:
-                    # Frame 0 shows prev_value (no blank opening frame)
                     t = i / max(animate_frames - 1, 1)
                     eased = self._ease_out_cubic(t)
                     animated_value = prev_value + (value - prev_value) * eased
                     current_font_number = font_number
                 else:
                     animated_value = value
-                    # Subtle pulse on hold
                     hold_progress = (i - animate_frames) / max(hold_frames, 1)
-                    pulse = 1.0 + 0.015 * math.sin(hold_progress * math.pi * 4)
-                    current_font_number = self._load_font(int(260 * pulse))
+                    pulse = 1.0 + 0.012 * math.sin(hold_progress * math.pi * 4)
+                    current_font_number = self._load_font(int(240 * pulse))
 
-                # --- Draw frame ---
-                img = Image.new('RGB', (FRAME_W, FRAME_H), BG_COLOR)
+                # --- Start from background copy ---
+                img = self._bg_frame.copy()
                 assert img.size == (FRAME_W, FRAME_H), f"Wrong frame size: {img.size}"
                 draw = ImageDraw.Draw(img)
 
-                # Accent top bar — y=0 to y=12
-                draw.rectangle([(0, 0), (FRAME_W, 12)], fill=ACCENT_COLOR)
+                # ===== ZONE 1 — TOP HEADER BAND (y: 0-180) =====
+                draw.rectangle([(0, 0), (FRAME_W, 180)], fill=(*PANEL_COLOR, 255))
 
-                # Label text — y=280
+                # Label — left-aligned
                 draw.text(
-                    (FRAME_W // 2, 280),
+                    (60, 90),
                     label.upper(),
                     font=font_label,
-                    fill=SECONDARY_COLOR,
-                    anchor='mm',
+                    fill=TEXT_COLOR,
+                    anchor='lm',
                 )
 
-                # Subtitle — y=360
+                # LIVE dot + text (top-right, pulsing)
+                live_visible = (i // 15) % 2 == 0
+                dot_alpha = 255 if live_visible else 80
+                dot_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+                dot_draw = ImageDraw.Draw(dot_layer)
+                dot_draw.ellipse(
+                    [(968, 78), (988, 98)],
+                    fill=(*change_color, dot_alpha),
+                )
+                img = Image.alpha_composite(img, dot_layer)
+                draw = ImageDraw.Draw(img)
                 draw.text(
-                    (FRAME_W // 2, 360),
-                    "Today's Move",
-                    font=font_subtitle,
-                    fill=SECONDARY_COLOR,
-                    anchor='mm',
+                    (1000, 90),
+                    'LIVE',
+                    font=font_live,
+                    fill=(*change_color, dot_alpha),
+                    anchor='lm',
                 )
 
-                # --- Central number with glow effect — y=880 ---
-                number_str = self._format_value(animated_value, currency)
-                number_y = 880
+                # ===== ZONE 2 — NUMBER STAGE (y: 180-1100) =====
 
-                # Glow: draw at 3 offsets in change_color at ~20% opacity
-                glow_color = (*change_color, 50)
-                # Use RGBA overlay for glow
-                glow_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
-                glow_draw = ImageDraw.Draw(glow_layer)
-                for dx, dy in [(3, 3), (-3, -3), (3, -3)]:
-                    glow_draw.text(
-                        (FRAME_W // 2 + dx, number_y + dy),
-                        number_str,
-                        font=current_font_number,
-                        fill=glow_color,
+                # Previous value ghost (fade out between 20-30% of frames)
+                if i < prev_fade_end:
+                    if i < prev_fade_start:
+                        prev_alpha = 255
+                    else:
+                        fade_frac = (i - prev_fade_start) / max(prev_fade_end - prev_fade_start, 1)
+                        prev_alpha = int(255 * (1 - fade_frac))
+
+                    prev_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+                    prev_draw = ImageDraw.Draw(prev_layer)
+                    prev_draw.text(
+                        (FRAME_W // 2, 260),
+                        'PREVIOUS',
+                        font=font_prev_label,
+                        fill=(*SECONDARY_COLOR, prev_alpha),
                         anchor='mm',
                     )
-                img = Image.composite(
-                    Image.alpha_composite(img.convert('RGBA'), glow_layer),
-                    img.convert('RGBA'),
-                    glow_layer,
-                ).convert('RGB')
+                    prev_str = self._format_value(prev_value, currency)
+                    prev_draw.text(
+                        (FRAME_W // 2, 310),
+                        prev_str,
+                        font=font_prev_value,
+                        fill=(*SECONDARY_COLOR, prev_alpha),
+                        anchor='mm',
+                    )
+                    img = Image.alpha_composite(img, prev_layer)
+                    draw = ImageDraw.Draw(img)
+
+                # Main number — glow + draw
+                number_str_no_curr = self._format_value(animated_value, '')
+                number_str_full = self._format_value(animated_value, currency)
+                number_y = 680
+
+                # Glow effect (4 offsets in change_color)
+                glow_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+                glow_draw = ImageDraw.Draw(glow_layer)
+                for dx, dy, ga in [(6, 6, 25), (-6, -6, 25), (6, -6, 20), (-6, 6, 20)]:
+                    glow_draw.text(
+                        (FRAME_W // 2 + dx, number_y + dy),
+                        number_str_no_curr,
+                        font=current_font_number,
+                        fill=(*change_color, ga),
+                        anchor='mm',
+                    )
+                img = Image.alpha_composite(img, glow_layer)
                 draw = ImageDraw.Draw(img)
 
-                # Main number on top
+                # Currency symbol — smaller, secondary, to the left of the number
+                num_bbox = draw.textbbox((FRAME_W // 2, number_y), number_str_no_curr,
+                                        font=current_font_number, anchor='mm')
+                curr_x = num_bbox[0] - 10
+                curr_y = num_bbox[1] + 20
+                draw.text(
+                    (curr_x, curr_y),
+                    currency,
+                    font=font_currency,
+                    fill=SECONDARY_COLOR,
+                    anchor='ra',
+                )
+
+                # Main number in white
                 draw.text(
                     (FRAME_W // 2, number_y),
-                    number_str,
+                    number_str_no_curr,
                     font=current_font_number,
                     fill=TEXT_COLOR,
                     anchor='mm',
                 )
 
-                # --- % change badge with rounded rectangle chip — y=1060 ---
-                pct_str = f'{arrow} {abs(pct_change):.2f}%'
-                badge_y = 1060
+                # Animated underline (grows over first 40% of frames)
+                if i < underline_end:
+                    line_w = int((i / max(underline_end - 1, 1)) * 600)
+                else:
+                    line_w = 600
+                if line_w > 0:
+                    underline_y = num_bbox[3] + 20
+                    draw.line(
+                        [(FRAME_W // 2 - line_w // 2, underline_y),
+                         (FRAME_W // 2 + line_w // 2, underline_y)],
+                        fill=change_color,
+                        width=4,
+                    )
 
-                # Measure text for badge background
-                bbox = draw.textbbox((0, 0), pct_str, font=font_change)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                pad_x, pad_y = 24, 12
-                badge_x1 = FRAME_W // 2 - text_w // 2 - pad_x
-                badge_y1 = badge_y - text_h // 2 - pad_y
-                badge_x2 = FRAME_W // 2 + text_w // 2 + pad_x
-                badge_y2 = badge_y + text_h // 2 + pad_y
+                # ===== ZONE 3 — CHANGE BADGE (y: 1100-1280) =====
+                badge_cx = FRAME_W // 2
+                badge_cy = 1190
 
-                # Rounded rectangle chip background (20% opacity via overlay)
-                chip_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
-                chip_draw = ImageDraw.Draw(chip_layer)
-                chip_draw.rounded_rectangle(
-                    [(badge_x1, badge_y1), (badge_x2, badge_y2)],
-                    radius=16,
-                    fill=(*change_color, 50),
+                # Diffuse glow behind pill
+                glow_pill = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+                glow_pill_draw = ImageDraw.Draw(glow_pill)
+                glow_pill_draw.rounded_rectangle(
+                    [(badge_cx - 200, badge_cy - 60), (badge_cx + 200, badge_cy + 60)],
+                    radius=60,
+                    fill=(*change_color, 15),
                 )
-                img = Image.alpha_composite(img.convert('RGBA'), chip_layer).convert('RGB')
+                img = Image.alpha_composite(img, glow_pill)
                 draw = ImageDraw.Draw(img)
 
-                # Badge text
+                # Pill background
+                pill_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+                pill_draw = ImageDraw.Draw(pill_layer)
+                pill_x1 = badge_cx - 160
+                pill_y1 = badge_cy - 48
+                pill_x2 = badge_cx + 160
+                pill_y2 = badge_cy + 48
+                # Fill
+                pill_draw.rounded_rectangle(
+                    [(pill_x1, pill_y1), (pill_x2, pill_y2)],
+                    radius=48,
+                    fill=(*change_color, 40),
+                )
+                # Border
+                pill_draw.rounded_rectangle(
+                    [(pill_x1, pill_y1), (pill_x2, pill_y2)],
+                    radius=48,
+                    outline=(*change_color, 200),
+                    width=2,
+                )
+                img = Image.alpha_composite(img, pill_layer)
+                draw = ImageDraw.Draw(img)
+
+                # Arrow inside pill (left side)
                 draw.text(
-                    (FRAME_W // 2, badge_y),
-                    pct_str,
-                    font=font_change,
+                    (pill_x1 + 40, badge_cy),
+                    arrow,
+                    font=font_pct_arrow,
                     fill=change_color,
                     anchor='mm',
                 )
 
-                # Divider line — y=1160, 400px wide
-                draw.line(
-                    [(FRAME_W // 2 - 200, 1160), (FRAME_W // 2 + 200, 1160)],
+                # Pct text inside pill (right of arrow)
+                pct_text = f'{sign}{abs(pct_change):.2f}%'
+                draw.text(
+                    (badge_cx + 20, badge_cy),
+                    pct_text,
+                    font=font_pct_text,
+                    fill=TEXT_COLOR,
+                    anchor='mm',
+                )
+
+                # ===== ZONE 4 — STATS ROW (y: 1300-1480) =====
+
+                # Horizontal rule above
+                draw.line([(60, 1298), (1020, 1298)], fill=RULE_COLOR, width=1)
+
+                # Left cell: PREV CLOSE
+                draw.text(
+                    (60, 1340),
+                    'PREV CLOSE',
+                    font=font_stat_label,
                     fill=SECONDARY_COLOR,
-                    width=2,
+                    anchor='la',
                 )
-
-                # Accent bottom bar — y=1908 to y=1920
-                draw.rectangle(
-                    [(0, 1908), (FRAME_W, FRAME_H)],
-                    fill=ACCENT_COLOR,
-                )
-
-                # Watermark bottom-left — y=1820
                 draw.text(
-                    (40, 1820),
+                    (60, 1400),
+                    self._format_value(prev_value, currency),
+                    font=font_stat_value,
+                    fill=TEXT_COLOR,
+                    anchor='la',
+                )
+
+                # Vertical divider
+                draw.line([(540, 1310), (540, 1470)], fill=RULE_COLOR, width=2)
+
+                # Right cell: CHANGE
+                draw.text(
+                    (600, 1340),
+                    'CHANGE',
+                    font=font_stat_label,
+                    fill=SECONDARY_COLOR,
+                    anchor='la',
+                )
+                change_str = f'{sign}{self._format_value(abs_change, currency)}'
+                draw.text(
+                    (600, 1400),
+                    change_str,
+                    font=font_stat_value,
+                    fill=change_color,
+                    anchor='la',
+                )
+
+                # Horizontal rule below
+                draw.line([(60, 1482), (1020, 1482)], fill=RULE_COLOR, width=1)
+
+                # ===== ZONE 5 — BOTTOM INFO BAND (y: 1820-1920) =====
+
+                # Teal top border
+                draw.line([(0, 1820), (FRAME_W, 1820)], fill=ACCENT_COLOR, width=2)
+
+                # Panel background
+                draw.rectangle([(0, 1822), (FRAME_W, FRAME_H)], fill=(*PANEL_COLOR, 255))
+
+                # Watermark
+                wm_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
+                wm_draw = ImageDraw.Draw(wm_layer)
+                wm_draw.text(
+                    (60, 1870),
                     '@ChartDrop',
-                    font=font_small,
-                    fill=(*SECONDARY_COLOR, 102),
+                    font=font_watermark,
+                    fill=(255, 255, 255, 100),
+                    anchor='lm',
                 )
-
-                # Source credit bottom-right — y=1820
-                draw.text(
-                    (FRAME_W - 40, 1820),
+                # Source credit
+                wm_draw.text(
+                    (1020, 1870),
                     source_credit,
-                    font=font_small,
-                    fill=(*SECONDARY_COLOR, 102),
-                    anchor='ra',
+                    font=font_source,
+                    fill=(*SECONDARY_COLOR, 100),
+                    anchor='rm',
                 )
+                img = Image.alpha_composite(img, wm_layer)
 
-                # Save frame
-                frame_path = tmp_path / f'frame_{i:05d}.png'
-                img.save(frame_path, 'PNG')
+                # Save frame as JPEG for speed
+                frame_path = tmp_path / f'frame_{i:05d}.jpg'
+                img.convert('RGB').save(frame_path, 'JPEG', quality=92)
 
-            # --- Assemble frames into MP4 via ffmpeg ---
+            # --- Assemble frames into MP4 ---
             output_path = self.output_dir / f'{story_id}_video.mp4'
             self._frames_to_mp4(tmp_path, output_path, FPS)
 
@@ -296,7 +464,7 @@ class KineticRenderer:
     # ------------------------------------------------------------------
 
     def _resolve_font(self) -> str:
-        """Return font path — Railway volume path or local fallback."""
+        """Return font path -- Railway volume path or local fallback."""
         if Path(FONT_PATH).exists():
             return FONT_PATH
         if Path(LOCAL_FONT_FALLBACK).exists():
@@ -345,10 +513,7 @@ class KineticRenderer:
 
     @staticmethod
     def _frames_to_mp4(frames_dir: Path, output_path: Path, fps: int) -> None:
-        """
-        Assemble PNG frames into MP4 using ffmpeg.
-        Forces output to exactly 1080x1920.
-        """
+        """Assemble JPEG frames into MP4. Forces 1080x1920."""
         ffmpeg_bin = os.environ.get('FFMPEG_BINARY', '')
         if not ffmpeg_bin or not Path(ffmpeg_bin).exists():
             try:
@@ -360,7 +525,7 @@ class KineticRenderer:
         cmd = [
             ffmpeg_bin, '-y',
             '-framerate', str(fps),
-            '-i', str(frames_dir / 'frame_%05d.png'),
+            '-i', str(frames_dir / 'frame_%05d.jpg'),
             '-vf', 'scale=1080:1920:force_original_aspect_ratio=disable',
             '-s', '1080x1920',
             '-c:v', 'libx264',
@@ -382,13 +547,7 @@ class KineticRenderer:
 # ---------------------------------------------------------------------------
 
 def _resolve_ffmpeg() -> str:
-    """
-    Resolve the ffmpeg binary path.
-    Order:
-      1. FFMPEG_BINARY env var (explicit override)
-      2. imageio_ffmpeg (bundled binary)
-      3. System 'ffmpeg' (Railway / Linux)
-    """
+    """Resolve ffmpeg binary path."""
     explicit = os.environ.get('FFMPEG_BINARY', '')
     if explicit and Path(explicit).exists():
         return explicit
@@ -408,17 +567,16 @@ def _resolve_ffmpeg() -> str:
 
 def test_render():
     """
-    Smoke test — renders a short 5-second kinetic video locally.
-    Run: python src/media/kinetic_renderer.py
-    Output: data/raw/test_kinetic_video.mp4
+    Smoke test -- renders two 5-second kinetic videos locally.
+    Test 1: DOWN move (red)   Test 2: UP move (green)
     """
     logging.basicConfig(level=logging.INFO)
     renderer = KineticRenderer()
 
-    print('\n[dataforge] Testing KineticRenderer...')
+    print('\n[dataforge] Testing KineticRenderer (Bloomberg terminal style)...')
     print(f'  Font path resolved: {renderer.font_path or "PIL default (no TTF found)"}')
 
-    # Test _format_value
+    # Format tests
     tests = [
         (2_800_000_000_000, '$', '$2.80T'),
         (180_000_000_000, '$', '$180.00B'),
@@ -429,31 +587,42 @@ def test_render():
     print('\n  Format tests:')
     for val, sym, expected in tests:
         result = KineticRenderer._format_value(val, sym)
-        if result == expected:
-            status = '[OK]'
-        else:
-            status = f'[FAIL] (got {result})'
+        status = '[OK]' if result == expected else f'[FAIL] (got {result})'
         print(f'    {val:>20,.0f}  ->  {result:>12}  {status}')
 
-    # Render a short test video (5 seconds to keep it fast locally)
-    print('\n  Rendering 5-second test video (1080x1920)...')
+    # Test 1 -- DOWN move (red)
+    print('\n  Test 1: Rendering DOWN move (Apple, red)...')
     try:
-        path = renderer.render(
+        path1 = renderer.render(
             value=2_850_000_000_000,
             prev_value=3_050_000_000_000,
             label='Apple Market Cap',
             currency='$',
             duration_sec=5.0,
-            story_id='test_kinetic',
+            story_id='test_kinetic_down',
             source_credit='Source: Yahoo Finance',
         )
-        size_mb = Path(path).stat().st_size / 1_048_576
-        print(f'  [OK] Video rendered: {path} ({size_mb:.1f} MB)')
-    except RuntimeError as e:
-        print(f'  [FAIL] Render failed: {e}')
-        print('    (ffmpeg may not be installed locally -- this will work on Railway)')
+        size1 = Path(path1).stat().st_size / 1_048_576
+        print(f'  [OK] {path1} ({size1:.1f} MB)')
     except Exception as e:
-        print(f'  [FAIL] Unexpected error: {e}')
+        print(f'  [FAIL] {e}')
+
+    # Test 2 -- UP move (green)
+    print('\n  Test 2: Rendering UP move (Bitcoin, green)...')
+    try:
+        path2 = renderer.render(
+            value=94_500,
+            prev_value=81_200,
+            label='Bitcoin Price',
+            currency='$',
+            duration_sec=5.0,
+            story_id='test_kinetic_up',
+            source_credit='Source: CoinGecko',
+        )
+        size2 = Path(path2).stat().st_size / 1_048_576
+        print(f'  [OK] {path2} ({size2:.1f} MB)')
+    except Exception as e:
+        print(f'  [FAIL] {e}')
 
     print('\n[dataforge] KineticRenderer test complete.')
 
