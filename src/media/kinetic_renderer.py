@@ -164,8 +164,8 @@ class KineticRenderer:
         sign = '+' if is_up else '-'
 
         # Fonts tuned for 1920px frame
-        font_number = self._load_font(240)
-        font_currency = self._load_font(120)
+        font_number = self._load_font(220)
+        font_currency = self._load_font(110)
         font_label = self._load_font(52)
         font_live = self._load_font(32)
         font_pct_arrow = self._load_font(56)
@@ -196,7 +196,7 @@ class KineticRenderer:
                     animated_value = value
                     hold_progress = (i - animate_frames) / max(hold_frames, 1)
                     pulse = 1.0 + 0.012 * math.sin(hold_progress * math.pi * 4)
-                    current_font_number = self._load_font(int(240 * pulse))
+                    current_font_number = self._load_font(int(220 * pulse))
 
                 # --- Start from background copy ---
                 img = self._bg_frame.copy()
@@ -264,18 +264,25 @@ class KineticRenderer:
                     img = Image.alpha_composite(img, prev_layer)
                     draw = ImageDraw.Draw(img)
 
-                # Main number — glow + draw
-                number_str_no_curr = self._format_value(animated_value, '')
-                number_str_full = self._format_value(animated_value, currency)
-                number_y = 680
+                # ===== HERO NUMBER — glow + currency + main draw =====
+                display_value = self._format_value(animated_value, '')
+                number_x = 540
+                number_y = 860
+
+                # Log hero number details on first frame only
+                if i == 0:
+                    logger.info(
+                        '[dataforge] Drawing hero number: %s at (%d, %d) size=%dpx colour=white',
+                        display_value, number_x, number_y, 220,
+                    )
 
                 # Glow effect (4 offsets in change_color)
                 glow_layer = Image.new('RGBA', (FRAME_W, FRAME_H), (0, 0, 0, 0))
                 glow_draw = ImageDraw.Draw(glow_layer)
                 for dx, dy, ga in [(6, 6, 25), (-6, -6, 25), (6, -6, 20), (-6, 6, 20)]:
                     glow_draw.text(
-                        (FRAME_W // 2 + dx, number_y + dy),
-                        number_str_no_curr,
+                        (number_x + dx, number_y + dy),
+                        display_value,
                         font=current_font_number,
                         fill=(*change_color, ga),
                         anchor='mm',
@@ -284,10 +291,10 @@ class KineticRenderer:
                 draw = ImageDraw.Draw(img)
 
                 # Currency symbol — smaller, secondary, to the left of the number
-                num_bbox = draw.textbbox((FRAME_W // 2, number_y), number_str_no_curr,
+                num_bbox = draw.textbbox((number_x, number_y), display_value,
                                         font=current_font_number, anchor='mm')
                 curr_x = num_bbox[0] - 10
-                curr_y = num_bbox[1] + 20
+                curr_y = num_bbox[1] + 15
                 draw.text(
                     (curr_x, curr_y),
                     currency,
@@ -296,12 +303,12 @@ class KineticRenderer:
                     anchor='ra',
                 )
 
-                # Main number in white
+                # Main hero number — explicit white (255,255,255)
                 draw.text(
-                    (FRAME_W // 2, number_y),
-                    number_str_no_curr,
+                    (number_x, number_y),
+                    display_value,
                     font=current_font_number,
-                    fill=TEXT_COLOR,
+                    fill=(255, 255, 255),
                     anchor='mm',
                 )
 
@@ -534,6 +541,7 @@ class KineticRenderer:
             '-preset', 'fast',
             str(output_path),
         ]
+        logger.info('[dataforge] ffmpeg cmd: %s', ' '.join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(
