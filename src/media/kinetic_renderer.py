@@ -52,15 +52,28 @@ UP_COLOR = (38, 166, 91)          # #26A65B
 DOWN_COLOR = (231, 76, 60)        # #E74C3C
 RULE_COLOR = (45, 55, 72)         # #2D3748
 
-FONT_PATH = os.environ.get(
-    'FONT_PATH',
+FONT_CANDIDATES = [
+    os.environ.get('FONT_PATH', ''),
     '/app/assets/fonts/Roboto-Bold.ttf',
-)
-LOCAL_FONT_FALLBACK = str(
-    Path(__file__).resolve().parent.parent.parent / 'assets' / 'fonts' / 'Roboto-Bold.ttf'
-)
+    '/app/data/fonts/Roboto-Bold.ttf',
+    'assets/fonts/Roboto-Bold.ttf',
+    os.path.join(os.path.dirname(__file__), '..', '..',
+                 'assets', 'fonts', 'Roboto-Bold.ttf'),
+]
 
 OUTPUT_DIR = Path(os.environ.get('DATAFORGE_RAW_DIR', 'data/raw'))
+
+
+def _verify_font(font_path: str) -> None:
+    """Verify font file can actually be loaded by Pillow."""
+    from PIL import ImageFont
+    try:
+        ImageFont.truetype(font_path, 48)
+        logger.info('[dataforge] Font verified: %s', font_path)
+    except Exception as e:
+        raise RuntimeError(
+            f'[dataforge] Font file found but cannot be loaded: {e}'
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +162,11 @@ class KineticRenderer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         total_frames = int(duration_sec * FPS)
+        output_path = self.output_dir / f'{story_id}_video.mp4'
+        logger.info(
+            '[dataforge] render() starting: font=%s, frames=%d, output=%s',
+            self.font_path, total_frames, output_path,
+        )
         animate_frames = int(total_frames * 0.60)
         hold_frames = total_frames - animate_frames
         underline_end = int(total_frames * 0.40)
@@ -457,7 +475,6 @@ class KineticRenderer:
                 frames.append(img.convert('RGB'))
 
         # --- Assemble frames into MP4 via rawvideo pipe ---
-        output_path = self.output_dir / f'{story_id}_video.mp4'
         self._frames_to_mp4(frames, output_path, FPS)
 
         logger.info('[dataforge] KineticRenderer: output -> %s', output_path)
@@ -468,27 +485,28 @@ class KineticRenderer:
     # ------------------------------------------------------------------
 
     def _resolve_font(self) -> str:
-        """Return font path -- Railway volume path or local fallback."""
-        if Path(FONT_PATH).exists():
-            return FONT_PATH
-        if Path(LOCAL_FONT_FALLBACK).exists():
-            logger.info('[dataforge] Using local font fallback: %s', LOCAL_FONT_FALLBACK)
-            return LOCAL_FONT_FALLBACK
-        logger.warning(
-            '[dataforge] Roboto-Bold.ttf not found at %s or %s -- PIL will use default font',
-            FONT_PATH, LOCAL_FONT_FALLBACK,
-        )
-        return ''
+        """Resolve font path from candidate list. Raises if not found."""
+        font_path = None
+        for candidate in FONT_CANDIDATES:
+            if candidate and os.path.exists(candidate):
+                font_path = os.path.abspath(candidate)
+                break
+
+        if font_path:
+            logger.info('[dataforge] Font resolved: %s', font_path)
+            _verify_font(font_path)
+            return font_path
+        else:
+            logger.error('[dataforge] FONT NOT FOUND -- searched: %s', FONT_CANDIDATES)
+            raise RuntimeError(
+                '[dataforge] Roboto-Bold.ttf not found. '
+                'Upload font to /app/assets/fonts/ on Railway volume.'
+            )
 
     def _load_font(self, size: int):
-        """Load Roboto-Bold at given size, fall back to PIL default."""
+        """Load Roboto-Bold at given size. Font path is guaranteed valid."""
         from PIL import ImageFont
-        if self.font_path and Path(self.font_path).exists():
-            try:
-                return ImageFont.truetype(self.font_path, size)
-            except Exception as e:
-                logger.warning('[dataforge] Font load error: %s', e)
-        return ImageFont.load_default()
+        return ImageFont.truetype(self.font_path, size)
 
     @staticmethod
     def _ease_out_cubic(t: float) -> float:
@@ -549,17 +567,35 @@ class KineticRenderer:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        for img in frames:
-            assert img.size == (1080, 1920), \
-                f'[dataforge] FATAL: frame is {img.size}, expected (1080, 1920)'
-            proc.stdin.write(img.tobytes())
 
-        proc.stdin.close()
-        stdout, stderr = proc.communicate()
+        try:
+            for i, img in enumerate(frames):
+                assert img.size == (1080, 1920), \
+                    f'[dataforge] Frame {i} wrong size: {img.size}'
+                try:
+                    proc.stdin.write(img.tobytes())
+                except BrokenPipeError:
+                    logger.error(
+                        '[dataforge] ffmpeg pipe broke at frame %d/%d -- '
+                        'ffmpeg likely rejected the stream. '
+                        'Check font and frame integrity.',
+                        i, len(frames),
+                    )
+                    break
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+        stdout, stderr = proc.communicate(timeout=120)
 
         if proc.returncode != 0:
-            logger.error('[dataforge] ffmpeg failed:\n%s', stderr.decode()[-800:])
-            raise RuntimeError(f'ffmpeg failed: {stderr.decode()[-200:]}')
+            err_tail = stderr.decode(errors='replace')[-1000:]
+            logger.error('[dataforge] ffmpeg stderr:\n%s', err_tail)
+            raise RuntimeError(
+                f'ffmpeg failed (code {proc.returncode}): {err_tail[-200:]}'
+            )
 
         # Probe and log output resolution
         import json as _json
