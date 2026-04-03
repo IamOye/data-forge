@@ -367,21 +367,38 @@ def _merge_audio_video(
     ffmpeg_bin = _resolve_ffmpeg()
     logger.info("[dataforge] Merging audio+video with ffmpeg: %s", ffmpeg_bin)
 
-    cmd = [
+    merge_cmd = [
         ffmpeg_bin, "-y",
-        "-i", video_path,
-        "-i", audio_path,
-        "-c:v", "copy",
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-vf", "scale=1080:1920:force_original_aspect_ratio=disable",
+        "-s", "1080x1920",
         "-c:a", "aac",
-        "-b:a", "192k",
+        "-b:a", "128k",
         "-shortest",
-        output_path,
+        str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    logger.info("[dataforge] Merge cmd: %s", " ".join(merge_cmd))
+    result = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg merge failed:\n{result.stderr[-500:]}"
         )
+
+    # Probe and verify merged output resolution
+    probe = subprocess.run(
+        [ffmpeg_bin, "-i", str(output_path)],
+        capture_output=True, text=True,
+    )
+    for line in probe.stderr.split("\n"):
+        if "Stream" in line and "Video" in line:
+            logger.info("[dataforge] Merged output probe: %s", line.strip())
+            break
+
     logger.info("[dataforge] Merged output: %s", output_path)
     return output_path
 
