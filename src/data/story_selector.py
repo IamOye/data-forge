@@ -29,7 +29,9 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from collections import namedtuple
+from datetime import datetime, timedelta
 
 import anthropic
 from dotenv import load_dotenv
@@ -78,6 +80,29 @@ _DEFAULT_SLOT_MAP = [
     ('evening',  'bar_race',  'bar race'),
     ('midnight', 'split',     'split screen'),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Recent metric dedup
+# ---------------------------------------------------------------------------
+
+DB_PATH = os.environ.get("DATAFORGE_DB_PATH", "data/processed/data_forge.db")
+
+
+def get_recent_metrics(db_path: str = DB_PATH, days: int = 7) -> list[str]:
+    """Returns list of metric_names (youtube_title) posted in the last N days."""
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT DISTINCT youtube_title FROM video_log "
+            "WHERE uploaded_at > ? AND upload_status = 'UPLOADED'",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows if r[0]]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +199,10 @@ class StorySelector:
 
         if already_used:
             lines.append(f"\nAlready used today (exclude): {', '.join(already_used)}")
+
+        recent = get_recent_metrics()
+        if recent:
+            lines.append(f"\nAVOID these topics posted in the last 7 days: {', '.join(recent[:20])}")
 
         lines.append(
             "\nSelect the 4 most compelling stories. "

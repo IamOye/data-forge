@@ -483,16 +483,18 @@ class DataFetcher:
 
     def fetch_crypto_movers(self, top_n: int = 10) -> list:
         """
-        Fetch top N coins sorted by 24h % change from CoinGecko.
+        Fetch top coins by market cap from CoinGecko, sorted by 24h % change.
+        Uses day-of-week rotation to avoid posting the same coin multiple days.
 
         Returns:
-            list[DataPoint] sorted by abs(pct_change) descending.
+            list[DataPoint] sorted by abs(pct_change) descending,
+            rotated by weekday to vary the top pick.
         """
         try:
             url = f'{COINGECKO_BASE_URL}/coins/markets'
             params = {
                 'vs_currency': 'usd',
-                'order': 'percent_change_24h',
+                'order': 'market_cap_desc',
                 'per_page': 100,
                 'page': 1,
                 'price_change_percentage': '24h',
@@ -529,7 +531,21 @@ class DataFetcher:
                     results.append(dp)
 
             results.sort(key=lambda x: abs(x.pct_change), reverse=True)
-            logger.info('[dataforge] fetch_crypto_movers: %d movers found', len(results))
+
+            # Day-of-week rotation: pick a different top coin each day
+            weekday = datetime.utcnow().weekday()  # 0=Mon, 6=Sun
+            if len(results) > 7:
+                rotated_pick = results[weekday % min(len(results), 7)]
+                # Move the rotated pick to position 0
+                results.remove(rotated_pick)
+                results.insert(0, rotated_pick)
+                logger.info(
+                    '[dataforge] fetch_crypto_movers: %d movers, rotated pick=%s (weekday=%d)',
+                    len(results), rotated_pick.metric_name, weekday,
+                )
+            else:
+                logger.info('[dataforge] fetch_crypto_movers: %d movers found', len(results))
+
             return results[:top_n]
 
         except Exception as e:
@@ -664,6 +680,59 @@ class DataFetcher:
             return []
 
     # ------------------------------------------------------------------
+    # FRED daily story — rotating macro indicators
+    # ------------------------------------------------------------------
+
+    def fetch_fred_daily_story(self) -> 'DataPoint | None':
+        """
+        Picks today's FRED series by day-of-year rotation.
+        Returns a DataPoint for the most recent value vs prior period.
+        Targets western/US audience — major macro indicators only.
+        """
+        SERIES_ROTATION = [
+            ('FEDFUNDS',          'Fed Funds Rate',        '%',   'FRED'),
+            ('CPIAUCSL',          'US Inflation (CPI)',    '%',   'FRED'),
+            ('UNRATE',            'US Unemployment Rate',  '%',   'FRED'),
+            ('MORTGAGE30US',      '30-Year Mortgage Rate', '%',   'FRED'),
+            ('T10Y2Y',            'Yield Curve Spread',    'pts', 'FRED'),
+            ('DCOILWTICO',        'WTI Crude Oil',         '$',   'FRED'),
+            ('GOLDAMGBD228NLBM',  'Gold Price',            '$',   'FRED'),
+            ('DEXUSEU',           'EUR/USD Exchange Rate',  '$',   'FRED'),
+            ('SP500',             'S&P 500 Index',         'pts', 'FRED'),
+            ('NASDAQCOM',         'NASDAQ Composite',      'pts', 'FRED'),
+            ('VIXCLS',            'VIX Fear Index',        'pts', 'FRED'),
+            ('DEXJPUS',           'USD/JPY Exchange Rate',  'Y',  'FRED'),
+            ('BAMLH0A0HYM2',     'High Yield Spread',     'pts', 'FRED'),
+            ('UMCSENT',           'Consumer Sentiment',    'pts', 'FRED'),
+        ]
+        idx = datetime.utcnow().timetuple().tm_yday % len(SERIES_ROTATION)
+        series_id, label, unit, source = SERIES_ROTATION[idx]
+        logger.info('[dataforge] FRED daily rotation: day %d -> %s (%s)',
+                     datetime.utcnow().timetuple().tm_yday, label, series_id)
+        try:
+            df = self.fetch_fred_series(series_id, periods=2)
+            if df is None or len(df) < 2:
+                logger.warning('[dataforge] FRED %s returned < 2 periods', series_id)
+                return None
+            current = float(df.iloc[-1]['value'] if 'value' in df.columns else df.iloc[-1])
+            previous = float(df.iloc[-2]['value'] if 'value' in df.columns else df.iloc[-2])
+            pct = ((current - previous) / abs(previous) * 100) if previous else 0
+            return DataPoint(
+                metric_name=label,
+                current_value=current,
+                prev_value=previous,
+                pct_change=round(pct, 2),
+                data_source=source,
+                date=str(datetime.utcnow().date()),
+                currency=unit,
+                extra_meta={'series_id': series_id},
+            )
+        except Exception as e:
+            logger.warning('[dataforge] FRED daily story failed (%s): %s',
+                           series_id, e)
+            return None
+
+    # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
 
@@ -714,12 +783,23 @@ def test_data_fetcher():
     for c in crypto:
         print(f'  {c.metric_name}: ${c.current_value} ({c.pct_change:+.2f}%)')
 
-    print('\n--- Forex: USD/NGN ---')
-    fx = fetcher.fetch_forex('USD', 'NGN')
+    print('\n--- Forex (rotating pair) ---')
+    FOREX_PAIRS = [('EUR', 'USD'), ('GBP', 'USD'), ('USD', 'JPY'), ('USD', 'CHF')]
+    today_index = datetime.utcnow().timetuple().tm_yday % len(FOREX_PAIRS)
+    pair = FOREX_PAIRS[today_index]
+    print(f'  Today\'s pair: {pair[0]}/{pair[1]}')
+    fx = fetcher.fetch_forex(pair[0], pair[1])
     if fx:
         print(f'  {fx.metric_name}: {fx.current_value} (source: {fx.data_source})')
     else:
         print('  No forex data returned')
+
+    print('\n--- FRED Daily Story (rotating) ---')
+    fred_dp = fetcher.fetch_fred_daily_story()
+    if fred_dp:
+        print(f'  {fred_dp.metric_name}: {fred_dp.current_value} {fred_dp.currency} ({fred_dp.pct_change:+.2f}%)')
+    else:
+        print('  FRED returned None')
 
     print('\n--- News Context: Apple stock ---')
     headlines = fetcher.fetch_news_context('Apple stock', max_results=2)

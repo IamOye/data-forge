@@ -28,7 +28,6 @@ import logging
 import math
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -182,10 +181,9 @@ class KineticRenderer:
             total_frames, FRAME_W, FRAME_H, story_id,
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
+        frames = []
 
-            for i in range(total_frames):
+        for i in range(total_frames):
                 # --- Compute animated value ---
                 if i < animate_frames:
                     t = i / max(animate_frames - 1, 1)
@@ -455,13 +453,12 @@ class KineticRenderer:
                 )
                 img = Image.alpha_composite(img, wm_layer)
 
-                # Save frame as JPEG for speed
-                frame_path = tmp_path / f'frame_{i:05d}.jpg'
-                img.convert('RGB').save(frame_path, 'JPEG', quality=92)
+                # Append RGB frame to list
+                frames.append(img.convert('RGB'))
 
-            # --- Assemble frames into MP4 ---
-            output_path = self.output_dir / f'{story_id}_video.mp4'
-            self._frames_to_mp4(tmp_path, output_path, FPS)
+        # --- Assemble frames into MP4 via rawvideo pipe ---
+        output_path = self.output_dir / f'{story_id}_video.mp4'
+        self._frames_to_mp4(frames, output_path, FPS)
 
         logger.info('[dataforge] KineticRenderer: output -> %s', output_path)
         return str(output_path)
@@ -519,8 +516,8 @@ class KineticRenderer:
         return f'{prefix}{currency}{value:,.2f}'
 
     @staticmethod
-    def _frames_to_mp4(frames_dir: Path, output_path: Path, fps: int) -> None:
-        """Assemble JPEG frames into MP4. Forces 1080x1920."""
+    def _frames_to_mp4(frames: list, output_path: Path, fps: int) -> None:
+        """Pipe raw RGB frames to ffmpeg via stdin. Guarantees 1080x1920 output."""
         ffmpeg_bin = os.environ.get('FFMPEG_BINARY', '')
         if not ffmpeg_bin or not Path(ffmpeg_bin).exists():
             try:
@@ -528,25 +525,53 @@ class KineticRenderer:
                 ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
             except Exception:
                 ffmpeg_bin = 'ffmpeg'
-        logger.info('[dataforge] Using ffmpeg binary: %s', ffmpeg_bin)
+
         cmd = [
             ffmpeg_bin, '-y',
-            '-framerate', str(fps),
-            '-i', str(frames_dir / 'frame_%05d.jpg'),
-            '-vf', 'scale=1080:1920:force_original_aspect_ratio=disable',
+            '-f', 'rawvideo',
+            '-vcodec', 'rawvideo',
             '-s', '1080x1920',
+            '-pix_fmt', 'rgb24',
+            '-r', str(fps),
+            '-i', 'pipe:0',
             '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-crf', '18',
             '-preset', 'fast',
+            '-crf', '18',
+            '-pix_fmt', 'yuv420p',
+            '-r', str(fps),
             str(output_path),
         ]
-        logger.info('[dataforge] ffmpeg cmd: %s', ' '.join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f'ffmpeg failed:\n{result.stderr[-500:]}'
-            )
+        logger.info('[dataforge] ffmpeg rawvideo cmd: %s', ' '.join(cmd))
+
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for img in frames:
+            assert img.size == (1080, 1920), \
+                f'[dataforge] FATAL: frame is {img.size}, expected (1080, 1920)'
+            proc.stdin.write(img.tobytes())
+
+        proc.stdin.close()
+        stdout, stderr = proc.communicate()
+
+        if proc.returncode != 0:
+            logger.error('[dataforge] ffmpeg failed:\n%s', stderr.decode()[-800:])
+            raise RuntimeError(f'ffmpeg failed: {stderr.decode()[-200:]}')
+
+        # Probe and log output resolution
+        import json as _json
+        probe = subprocess.run(
+            [ffmpeg_bin, '-i', str(output_path)],
+            capture_output=True, text=True,
+        )
+        for line in probe.stderr.split('\n'):
+            if 'Stream' in line and 'Video' in line:
+                logger.info('[dataforge] Output probe: %s', line.strip())
+                break
+
         logger.info('[dataforge] ffmpeg assembled %s', output_path)
 
 

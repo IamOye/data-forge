@@ -435,40 +435,40 @@ class ProductionPipeline:
                 units_used, YOUTUBE_DAILY_BUDGET,
             )
 
-            # --- Step 1: Fetch daily movers ---
-            logger.info("[dataforge] Step 1: Fetching daily movers...")
+            # --- Step 1: Fetch data (FRED primary -> crypto fallback) ---
+            logger.info("[dataforge] Step 1: Fetching data (FRED primary)...")
             from src.data.data_fetcher import DataFetcher
             fetcher = DataFetcher()
+            dp = None
 
             try:
-                movers = fetcher.fetch_daily_movers(top_n=5)
+                dp = fetcher.fetch_fred_daily_story()
+                if dp is None:
+                    raise ValueError('FRED returned None')
+                logger.info('[dataforge] Using FRED story: %s', dp.metric_name)
             except Exception as e:
-                logger.error("[dataforge] Step 1 fetch_daily_movers failed: %s", e, exc_info=True)
-                movers = []
-
-            if not movers:
-                logger.warning("[dataforge] Stock data unavailable -- using crypto movers as fallback")
+                logger.warning('[dataforge] FRED failed (%s), falling back to crypto', e)
                 try:
-                    movers = fetcher.fetch_crypto_movers(top_n=5)
-                except Exception as e:
-                    logger.error("[dataforge] Step 1 fetch_crypto_movers also failed: %s", e, exc_info=True)
-                    movers = []
+                    movers = fetcher.fetch_crypto_movers(top_n=20)
+                    dp = movers[0] if movers else None
+                except Exception as e2:
+                    logger.error("[dataforge] Step 1 crypto also failed: %s", e2, exc_info=True)
 
-            if not movers:
-                result["error"] = "No movers from any source (yfinance, polygon, coingecko all empty)"
+            if dp is None:
+                result["error"] = "No data available from any source (FRED + crypto both failed)"
                 logger.error("[dataforge] %s", result["error"])
                 return result
 
-            top_mover = movers[0]
-            metric_name = top_mover.metric_name
-            current_value = top_mover.current_value
-            prev_value = top_mover.prev_value
-            pct_change = top_mover.pct_change
-            data_source = top_mover.data_source
+            metric_name = dp.metric_name
+            current_value = dp.current_value
+            prev_value = dp.prev_value
+            pct_change = dp.pct_change
+            data_source = dp.data_source
+            top_mover = dp
 
             logger.info(
-                "[dataforge] Step 1 complete: source=%s, top_mover=%s (%.2f -> %.2f, %+.2f%%), %d total movers",
-                data_source, metric_name, prev_value, current_value, pct_change, len(movers),
+                "[dataforge] Step 1 complete: source=%s, metric=%s (%.2f -> %.2f, %+.2f%%)",
+                data_source, metric_name, prev_value, current_value, pct_change,
             )
 
             # --- Step 2: Fetch news context ---

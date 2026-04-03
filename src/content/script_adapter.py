@@ -42,45 +42,33 @@ _MODEL = "claude-sonnet-4-5"
 MAX_WORDS = 60
 RETRY_WORD_LIMIT = 58
 
-_SYSTEM_PROMPT = """You are a financial data narrator writing 40-second YouTube Shorts scripts.
-You translate raw economic numbers into compelling micro-stories for a global audience.
-
-STRUCTURE — 4 parts:
-  HOOK    — The surprising data fact. One sentence. Drop the number immediately.
-             Make it feel urgent, unusual, or alarming. (10-15 words)
-  CONTEXT — Why this number matters. What caused it. One or two sentences.
-             Use plain language. No jargon. (15-20 words)
-  INSIGHT — What this means for the viewer's money, job, or life. One sentence.
-             Make it personal and actionable. (10-15 words)
-  CTA     — Exactly one sentence: "Follow for daily data that actually matters."
-             Do not rephrase this. Use it verbatim. (8 words)
-
-RULES:
-  - Total word count: 50-55 words. Hard maximum: 60 words.
-  - BEFORE responding, count every word. Cut until under 60.
-  - The script must make sense WITHOUT seeing any chart or visual.
-  - No jargon: no "basis points", "QE", "yield curve", "FOMC"
-  - Write amounts in words: "two point eight trillion dollars" not "$2.8T"
-  - Write percentages in words: "six point six percent" not "6.6%"
-  - Active voice. Present tense. Short sentences.
-  - No sentence longer than 18 words.
-  - No em dashes, no hashtags, no emojis, no stage directions.
-  - Never use: "In conclusion", "It is important to note", "As we can see"
-  - Up moves: frame as opportunity or warning depending on context
-  - Down moves: frame as loss, risk, or opportunity depending on context
-
-CURRENCY RULES:
-  - Write in full words: "two trillion dollars" not "$2T"
-  - For Nigerian content: "one thousand three hundred naira" not "₦1,300"
-  - Always specify the currency name: "US dollars", "euros", "naira"
-
-Respond ONLY with a JSON object, no markdown, no preamble:
-{
-  "hook": "...",
-  "context": "...",
-  "insight": "...",
-  "cta": "Follow for daily data that actually matters."
-}"""
+_SYSTEM_PROMPT = (
+    "You are a financial data narrator writing scripts for 35-40 second "
+    "YouTube Shorts videos. Your script must be EXACTLY 50-60 words — "
+    "no shorter, no longer. Count every word before returning.\n\n"
+    "Structure (follow this exactly):\n"
+    "HOOK (8-12 words): One alarming or surprising data fact. "
+    "Start with the number. Example: '$180 billion wiped from Apple "
+    "in a single session.'\n"
+    "CONTEXT (15-20 words): What drove this move and why it matters "
+    "right now. Reference a real cause — earnings, Fed decision, "
+    "inflation print, macro event.\n"
+    "INSIGHT (12-15 words): What this means for markets or investors "
+    "going forward. Be specific.\n"
+    "CTA (8-10 words): 'Follow ChartDrop for daily data that moves "
+    "markets.'\n\n"
+    "Rules:\n"
+    "- Active voice, present tense throughout\n"
+    "- Never say: 'In conclusion', 'It is important', 'As we can see'\n"
+    "- No jargon that a non-finance person wouldn't understand\n"
+    "- The script must make complete sense WITHOUT seeing the chart\n"
+    "- Numbers must match the data provided exactly\n"
+    "- MINIMUM 50 words. If your draft is under 50 words, expand the "
+    "CONTEXT and INSIGHT sections before returning.\n\n"
+    "Respond ONLY with a JSON object, no markdown, no preamble:\n"
+    "{\"hook\": \"...\", \"context\": \"...\", \"insight\": \"...\", "
+    "\"cta\": \"Follow ChartDrop for daily data that moves markets.\"}"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +111,7 @@ class ScriptResult:
 
 
 REQUIRED_PARTS = ["hook", "context", "insight", "cta"]
-FIXED_CTA = "Follow for daily data that actually matters."
+FIXED_CTA = "Follow ChartDrop for daily data that moves markets."
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +206,17 @@ class ScriptAdapter:
             )
             parts["cta"] = FIXED_CTA
 
-        return self._build_result(metric_name, parts, raw)
+        result = self._build_result(metric_name, parts, raw)
+
+        # Word count validation logging
+        if result.word_count < 45:
+            logger.warning(
+                '[dataforge] Script too short: %d words. Story: %s',
+                result.word_count, metric_name,
+            )
+        logger.info('[dataforge] Script word count: %d words', result.word_count)
+
+        return result
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -235,21 +233,23 @@ class ScriptAdapter:
         story_type: str,
     ) -> str:
         direction = "UP" if pct_change >= 0 else "DOWN"
-        news_block = ""
+        sign = "+" if pct_change >= 0 else ""
         if news_context:
             headlines = "\n".join(f"  - {h}" for h in news_context[:3])
             news_block = f"\nNews context (use to explain WHY):\n{headlines}"
+        else:
+            news_block = "\nNo news context available."
 
         return (
             f"Metric: {metric_name}\n"
             f"Current value: {current_value:,.2f}\n"
             f"Previous value: {prev_value:,.2f}\n"
-            f"Change: {direction} {abs(pct_change):.2f}%\n"
+            f"Change: {direction} {sign}{pct_change:.2f}%\n"
+            f"This compares to {prev_value:,.2f} in the previous period.\n"
             f"Data source: {data_source}\n"
             f"Video format: {story_type}"
             f"{news_block}\n\n"
-            f"Write the 4-part data narrator script now. "
-            f"Remember: under 60 words total. "
+            f"Write the 4-part script now. MUST be 50-60 words total. "
             f"CTA must be verbatim: \"{FIXED_CTA}\""
         )
 
