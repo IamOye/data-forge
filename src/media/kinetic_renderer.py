@@ -27,6 +27,7 @@ Usage:
 import logging
 import math
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -161,11 +162,13 @@ class KineticRenderer:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        total_frames = int(duration_sec * FPS)
+        RENDER_FPS = 15   # generate frames at 15fps (halves RAM + disk)
+        OUTPUT_FPS = 30   # ffmpeg outputs at 30fps (duplicates frames)
+        total_frames = int(duration_sec * RENDER_FPS)
         output_path = self.output_dir / f'{story_id}_video.mp4'
         logger.info(
-            '[dataforge] render() starting: font=%s, frames=%d, output=%s',
-            self.font_path, total_frames, output_path,
+            '[dataforge] render() starting: font=%s, frames=%d (render@%dfps->output@%dfps), output=%s',
+            self.font_path, total_frames, RENDER_FPS, OUTPUT_FPS, output_path,
         )
         animate_frames = int(total_frames * 0.60)
         hold_frames = total_frames - animate_frames
@@ -199,9 +202,15 @@ class KineticRenderer:
             total_frames, FRAME_W, FRAME_H, story_id,
         )
 
-        frames = []
+        # Write frames directly to disk — no list accumulation
+        volume_tmp = Path(os.environ.get(
+            'DATAFORGE_RAW_DIR', 'data/raw'
+        )) / 'tmp_frames'
 
-        for i in range(total_frames):
+        try:
+          volume_tmp.mkdir(parents=True, exist_ok=True)
+
+          for i in range(total_frames):
                 # --- Compute animated value ---
                 if i < animate_frames:
                     t = i / max(animate_frames - 1, 1)
@@ -471,11 +480,18 @@ class KineticRenderer:
                 )
                 img = Image.alpha_composite(img, wm_layer)
 
-                # Append RGB frame to list
-                frames.append(img.convert('RGB'))
+                # Write frame directly to disk — no RAM accumulation
+                frame_path = volume_tmp / f'frame_{i:05d}.jpg'
+                img.convert('RGB').save(frame_path, 'JPEG', quality=85)
+                del img  # free PIL object immediately
 
-        # --- Assemble frames into MP4 via rawvideo pipe ---
-        self._frames_to_mp4(frames, output_path, FPS)
+          # --- Assemble frames into MP4 ---
+          self._frames_to_mp4(volume_tmp, output_path, RENDER_FPS, OUTPUT_FPS)
+
+        finally:
+            if volume_tmp.exists():
+                shutil.rmtree(volume_tmp, ignore_errors=True)
+                logger.info('[dataforge] Temp frames cleaned up')
 
         logger.info('[dataforge] KineticRenderer: output -> %s', output_path)
         return str(output_path)
@@ -534,11 +550,11 @@ class KineticRenderer:
         return f'{prefix}{currency}{value:,.2f}'
 
     @staticmethod
-    def _frames_to_mp4(frames: list, output_path: Path, fps: int) -> None:
-        """Write JPEG frames to disk, assemble with ffmpeg. No RAM spike."""
-        import json as _json
-        import shutil
-
+    def _frames_to_mp4(
+        frames_dir: Path, output_path: Path,
+        input_fps: int, output_fps: int = 30,
+    ) -> None:
+        """Assemble pre-written JPEG frames into MP4. Frames already on disk."""
         ffmpeg_bin = os.environ.get('FFMPEG_BINARY', '')
         if not ffmpeg_bin or not Path(ffmpeg_bin).exists():
             try:
@@ -547,75 +563,53 @@ class KineticRenderer:
             except Exception:
                 ffmpeg_bin = 'ffmpeg'
 
-        # Write frames to volume-backed temp dir (disk, not RAM)
-        volume_tmp = Path(os.environ.get(
-            'DATAFORGE_RAW_DIR', 'data/raw'
-        )) / 'tmp_frames'
-        volume_tmp.mkdir(parents=True, exist_ok=True)
+        # Verify first frame on disk
+        from PIL import Image as _Image
+        check = _Image.open(frames_dir / 'frame_00000.jpg')
+        check_size = check.size
+        check.close()
+        assert check_size == (1080, 1920), \
+            f'[dataforge] Saved frame wrong size: {check_size}'
+        logger.info('[dataforge] Frame 0 on disk verified: %dx%d', *check_size)
 
-        try:
-            # Write JPEG frames to disk
-            for i, img in enumerate(frames):
-                assert img.size == (1080, 1920), \
-                    f'[dataforge] Frame {i} wrong size: {img.size}'
-                frame_path = volume_tmp / f'frame_{i:05d}.jpg'
-                img.save(frame_path, 'JPEG', quality=92)
+        cmd = [
+            ffmpeg_bin, '-y',
+            '-framerate', str(input_fps),
+            '-i', str(frames_dir / 'frame_%05d.jpg'),
+            '-vf', 'scale=1080:1920:force_original_aspect_ratio=disable',
+            '-s', '1080x1920',
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '18',
+            '-pix_fmt', 'yuv420p',
+            '-r', str(output_fps),
+            str(output_path),
+        ]
+        logger.info('[dataforge] ffmpeg cmd: %s', ' '.join(cmd))
 
-            # Verify first frame on disk
-            from PIL import Image as _Image
-            check = _Image.open(volume_tmp / 'frame_00000.jpg')
-            check_size = check.size
-            check.close()
-            assert check_size == (1080, 1920), \
-                f'[dataforge] Saved frame wrong size: {check_size}'
-            logger.info('[dataforge] Frame 0 on disk verified: %dx%d',
-                        *check_size)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=300,
+        )
 
-            # ffmpeg reads from disk — no RAM pressure
-            cmd = [
-                ffmpeg_bin, '-y',
-                '-framerate', str(fps),
-                '-i', str(volume_tmp / 'frame_%05d.jpg'),
-                '-vf', 'scale=1080:1920:force_original_aspect_ratio=disable',
-                '-s', '1080x1920',
-                '-c:v', 'libx264',
-                '-preset', 'fast',
-                '-crf', '18',
-                '-pix_fmt', 'yuv420p',
-                '-r', str(fps),
-                str(output_path),
-            ]
-            logger.info('[dataforge] ffmpeg cmd: %s', ' '.join(cmd))
-
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300,
+        if result.returncode != 0:
+            logger.error('[dataforge] ffmpeg stderr:\n%s',
+                         result.stderr[-1000:])
+            raise RuntimeError(
+                f'ffmpeg failed (code {result.returncode}): '
+                f'{result.stderr[-200:]}'
             )
 
-            if result.returncode != 0:
-                logger.error('[dataforge] ffmpeg stderr:\n%s',
-                             result.stderr[-1000:])
-                raise RuntimeError(
-                    f'ffmpeg failed (code {result.returncode}): '
-                    f'{result.stderr[-200:]}'
-                )
+        # Probe and verify output resolution
+        probe = subprocess.run(
+            [ffmpeg_bin, '-i', str(output_path)],
+            capture_output=True, text=True,
+        )
+        for line in probe.stderr.split('\n'):
+            if 'Stream' in line and 'Video' in line:
+                logger.info('[dataforge] Output probe: %s', line.strip())
+                break
 
-            # Probe and verify output resolution
-            probe = subprocess.run(
-                [ffmpeg_bin, '-i', str(output_path)],
-                capture_output=True, text=True,
-            )
-            for line in probe.stderr.split('\n'):
-                if 'Stream' in line and 'Video' in line:
-                    logger.info('[dataforge] Output probe: %s', line.strip())
-                    break
-
-            logger.info('[dataforge] ffmpeg assembled %s', output_path)
-
-        finally:
-            # Always clean up temp frames to free disk space
-            if volume_tmp.exists():
-                shutil.rmtree(volume_tmp, ignore_errors=True)
-                logger.info('[dataforge] Temp frames cleaned up')
+        logger.info('[dataforge] ffmpeg assembled %s', output_path)
 
 
 # ---------------------------------------------------------------------------
