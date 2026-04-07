@@ -23,6 +23,8 @@ Usage:
     print(result)  # {success, story_id, video_id, youtube_url, error}
 """
 
+# Deploy: 2026-04-04 — force clean redeploy for 1080x1920 merge fix
+
 import sys
 import os
 # Ensure project root is in path so "from src.x import" works on Railway
