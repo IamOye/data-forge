@@ -92,8 +92,29 @@ class GSheetSync:
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
+
+        # Resolve credentials: base64-encoded JSON or file path
+        import base64 as _b64
+        import tempfile as _tmp
+
+        creds_file = self.credentials_path
+        if len(self.credentials_path) > 500 or not os.path.exists(self.credentials_path):
+            # Likely base64-encoded JSON, not a file path
+            try:
+                sa_json = _b64.b64decode(self.credentials_path).decode('utf-8')
+                tf = _tmp.NamedTemporaryFile(
+                    mode='w', suffix='.json', delete=False,
+                )
+                tf.write(sa_json)
+                tf.close()
+                creds_file = tf.name
+                logger.info("[dataforge] GSheet credentials decoded from base64 to %s", creds_file)
+            except Exception as e:
+                logger.error("[dataforge] Failed to decode GSHEET_SERVICE_ACCOUNT_JSON: %s", e)
+                raise
+
         creds = Credentials.from_service_account_file(
-            self.credentials_path, scopes=scopes
+            creds_file, scopes=scopes
         )
         gc = gspread.authorize(creds)
         spreadsheet = gc.open_by_key(self.spreadsheet_id)
