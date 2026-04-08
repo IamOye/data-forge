@@ -428,12 +428,16 @@ class ProductionPipeline:
         Route to the correct format-specific production method.
 
         Args:
-            format_type: 'kinetic', 'bar_race', or 'split'
+            format_type: 'kinetic', 'bar_race', 'split', or 'narrative'
 
         Returns:
             Dict with keys: success, story_id, video_id, youtube_url, error
         """
-        if format_type == "bar_race":
+        if format_type == "kinetic":
+            return self._produce_kinetic()
+        elif format_type == "narrative":
+            return self._produce_narrative()
+        elif format_type == "bar_race":
             return self._produce_bar_race()
         elif format_type == "split":
             return self._produce_split()
@@ -1002,6 +1006,139 @@ class ProductionPipeline:
             except Exception:
                 pass
             _send_telegram(f"DataForge SPLIT CRASHED\nStory: {story_id}\nError: {e}")
+            return result
+
+    # ------------------------------------------------------------------
+    # Format 4: Narrative
+    # ------------------------------------------------------------------
+
+    def _produce_narrative(self) -> dict[str, Any]:
+        """Full narrative (Format 4) production flow — breaking news card."""
+        story_id = f"df_nr_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        result: dict[str, Any] = {
+            "success": False, "story_id": story_id,
+            "video_id": None, "youtube_url": None, "error": None,
+        }
+
+        try:
+            # --- Quota check ---
+            has_budget, units_used = _check_quota(self.db_path)
+            if not has_budget:
+                result["error"] = f"YouTube quota exhausted: {units_used}/{YOUTUBE_DAILY_BUDGET}"
+                logger.warning("[dataforge] %s", result["error"])
+                return result
+            logger.info("[dataforge] Quota OK: %d/%d units used", units_used, YOUTUBE_DAILY_BUDGET)
+
+            # --- Step 1: Fetch FRED data (same rotation as kinetic) ---
+            logger.info("[dataforge] [narrative] Step 1: Fetching FRED data...")
+            from src.data.data_fetcher import DataFetcher
+            fetcher = DataFetcher()
+            dp = None
+
+            try:
+                dp = fetcher.fetch_fred_daily_story()
+                if dp is None:
+                    raise ValueError('FRED returned None')
+                logger.info('[dataforge] Using FRED story: %s', dp.metric_name)
+            except Exception as e:
+                logger.warning('[dataforge] FRED failed (%s), falling back to crypto', e)
+                try:
+                    movers = fetcher.fetch_crypto_movers(top_n=20)
+                    dp = movers[0] if movers else None
+                except Exception as e2:
+                    logger.error("[dataforge] Crypto also failed: %s", e2, exc_info=True)
+
+            if dp is None:
+                result["error"] = "No data from any source (FRED + crypto failed)"
+                logger.error("[dataforge] %s", result["error"])
+                return result
+
+            metric_name = dp.metric_name
+            current_value = dp.current_value
+            prev_value = dp.prev_value
+            pct_change = dp.pct_change
+            data_source = dp.data_source
+            unit = dp.currency if hasattr(dp, 'currency') else '$'
+            logger.info("[dataforge] Step 1 complete: %s (%+.2f%%)", metric_name, pct_change)
+
+            # --- Step 2: News context ---
+            logger.info("[dataforge] [narrative] Step 2: Fetching news context...")
+            try:
+                news = fetcher.fetch_news_context(metric_name, max_results=3)
+                news_headlines = [h if isinstance(h, str) else str(h) for h in news]
+            except Exception:
+                news_headlines = []
+
+            # --- Step 3: Generate script ---
+            logger.info("[dataforge] [narrative] Step 3: Generating script...")
+            from src.content.script_adapter import ScriptAdapter
+            script_result = ScriptAdapter().generate(
+                metric_name=metric_name, current_value=current_value,
+                prev_value=prev_value, pct_change=pct_change,
+                data_source=data_source, news_context=news_headlines,
+                story_type="narrative",
+            )
+            if not script_result.is_valid:
+                result["error"] = f"Script invalid: {script_result.validation_errors}"
+                return result
+            logger.info("[dataforge] Step 3 complete: %d words", script_result.word_count)
+
+            # --- Step 4: Save story to DB ---
+            _save_story(
+                self.db_path, story_id, "narrative", data_source, metric_name,
+                current_value, prev_value, pct_change,
+                script_result.full_script, script_result.hook,
+            )
+
+            # --- Step 5: Generate voiceover ---
+            logger.info("[dataforge] [narrative] Step 5: Generating voiceover...")
+            from src.media.voiceover import VoiceoverGenerator
+            vo_result = VoiceoverGenerator(output_dir=RAW_DIR).generate(
+                script_dict=script_result.to_dict(), topic_id=story_id, category="money",
+            )
+            if not vo_result.is_valid:
+                _update_story_status(self.db_path, story_id, "VO_FAILED")
+                result["error"] = f"Voiceover failed: {vo_result.validation_errors}"
+                return result
+            logger.info("[dataforge] Step 5 complete: %.1fs", vo_result.duration_seconds)
+
+            # --- Step 6: Render narrative video ---
+            logger.info("[dataforge] [narrative] Step 6: Rendering narrative card...")
+            from src.media.narrative_renderer import NarrativeRenderer
+            renderer = NarrativeRenderer(output_dir=RAW_DIR)
+            video_path = renderer.render(
+                script={
+                    'hook': script_result.hook,
+                    'context': script_result.context,
+                    'cta': script_result.cta,
+                },
+                metric={
+                    'name': metric_name,
+                    'current': current_value,
+                    'prev': prev_value,
+                    'pct_change': pct_change,
+                    'unit': unit,
+                },
+                duration_sec=vo_result.duration_seconds + 2.0,
+                story_id=story_id,
+                source_credit="Source: CoinGecko" if data_source == "coingecko" else f"Source: {data_source}",
+            )
+            logger.info("[dataforge] Step 6 complete: %s", video_path)
+
+            # --- Steps 7-12: post-production ---
+            return self._post_production(
+                story_id, video_path, vo_result.audio_path,
+                metric_name, data_source, script_result, result,
+            )
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error("[dataforge] Narrative pipeline crashed: %s", e, exc_info=True)
+            try:
+                _update_story_status(self.db_path, story_id, "FAILED")
+            except Exception:
+                pass
+            _send_telegram(f"DataForge NARRATIVE CRASHED\nStory: {story_id}\nError: {e}")
             return result
 
 

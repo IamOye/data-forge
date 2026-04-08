@@ -146,15 +146,8 @@ def data_refresh_job() -> None:
 def production_job(slot: str, format_type: str) -> None:
     """Run the production pipeline for one slot."""
     try:
-        # bar_race and split are supported; narrative still falls back to kinetic
+        # All 4 formats supported: kinetic, narrative, bar_race, split
         actual_format = format_type
-        if format_type in ("narrative",):
-            logger.warning(
-                "[dataforge] production_job: format '%s' not yet implemented "
-                "-- falling back to 'kinetic'",
-                format_type,
-            )
-            actual_format = "kinetic"
 
         logger.info(
             "[dataforge] production_job starting: slot=%s, format=%s",
@@ -425,7 +418,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 return
             try:
                 fmt = "kinetic"
-                if context.args and context.args[0] in ("kinetic", "bar_race", "split"):
+                if context.args and context.args[0] in ("kinetic", "narrative", "bar_race", "split"):
                     fmt = context.args[0]
                 await update.message.reply_text(f"Starting manual production run ({fmt})...")
                 t = threading.Thread(
@@ -448,7 +441,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 "  /stats   - Total uploads and views\n"
                 "  /quota   - YouTube quota usage\n"
                 "  /refresh - Refresh data cache\n"
-                "  /produce [kinetic|bar_race|split] - Manual production run\n"
+                "  /produce [kinetic|narrative|bar_race|split] - Manual production run\n"
                 "  /skip    - Skip next queued story\n"
                 "  /help    - Show this message"
             )
