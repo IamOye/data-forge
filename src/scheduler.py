@@ -146,9 +146,9 @@ def data_refresh_job() -> None:
 def production_job(slot: str, format_type: str) -> None:
     """Run the production pipeline for one slot."""
     try:
-        # Only kinetic is implemented; fall back for other formats
+        # bar_race is now supported; split/narrative still fall back to kinetic
         actual_format = format_type
-        if format_type in ("bar_race", "split", "narrative"):
+        if format_type in ("split", "narrative"):
             logger.warning(
                 "[dataforge] production_job: format '%s' not yet implemented "
                 "-- falling back to 'kinetic'",
@@ -157,13 +157,13 @@ def production_job(slot: str, format_type: str) -> None:
             actual_format = "kinetic"
 
         logger.info(
-            "[dataforge] production_job starting: slot=%s, format=%s (actual=%s)",
-            slot, format_type, actual_format,
+            "[dataforge] production_job starting: slot=%s, format=%s",
+            slot, actual_format,
         )
 
         from src.pipeline.production_pipeline import ProductionPipeline
         pipeline = ProductionPipeline()
-        result = pipeline.produce()
+        result = pipeline.produce(format_type=actual_format)
 
         if result.get("success"):
             logger.info(
@@ -420,12 +420,15 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 await update.message.reply_text(f"Error: {e}")
 
         async def cmd_produce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            """Trigger a manual production run (kinetic)."""
+            """Trigger a manual production run. Usage: /produce [kinetic|bar_race]"""
             try:
-                await update.message.reply_text("Starting manual production run (kinetic)...")
+                fmt = "kinetic"
+                if context.args and context.args[0] in ("kinetic", "bar_race"):
+                    fmt = context.args[0]
+                await update.message.reply_text(f"Starting manual production run ({fmt})...")
                 t = threading.Thread(
                     target=production_job,
-                    args=("manual", "kinetic"),
+                    args=("manual", fmt),
                     daemon=True,
                     name="manual-produce",
                 )
@@ -442,7 +445,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 "  /stats   - Total uploads and views\n"
                 "  /quota   - YouTube quota usage\n"
                 "  /refresh - Refresh data cache\n"
-                "  /produce - Manual production run (kinetic)\n"
+                "  /produce [kinetic|bar_race] - Manual production run\n"
                 "  /skip    - Skip next queued story\n"
                 "  /help    - Show this message"
             )
