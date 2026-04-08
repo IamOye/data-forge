@@ -421,6 +421,8 @@ def _setup_telegram_bot() -> threading.Thread | None:
 
         async def cmd_produce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             """Trigger a manual production run. Usage: /produce [kinetic|bar_race]"""
+            if not update.message:
+                return
             try:
                 fmt = "kinetic"
                 if context.args and context.args[0] in ("kinetic", "bar_race"):
@@ -435,7 +437,8 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 t.start()
                 await update.message.reply_text("Production job started. Check back in 2-3 minutes.")
             except Exception as e:
-                await update.message.reply_text(f"Error: {e}")
+                if update.message:
+                    await update.message.reply_text(f"Error: {e}")
 
         async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             """Show available commands."""
