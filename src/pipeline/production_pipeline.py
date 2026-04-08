@@ -470,7 +470,7 @@ class ProductionPipeline:
         # --- Step 8: Upload to YouTube ---
         logger.info("[dataforge] Step 8: Uploading to YouTube...")
         try:
-            video_title = script_result.hook[:100]
+            video_title = getattr(script_result, '_youtube_title', None) or script_result.hook[:100]
             video_description = (
                 f"{script_result.full_script}\n\n"
                 f"Source: {data_source}\n"
@@ -707,6 +707,7 @@ class ProductionPipeline:
             df = None
 
             try:
+                logger.info('[dataforge] Calling fetch_world_bank(NY.GDP.MKTP.CD)...')
                 wb_df = fetcher.fetch_world_bank(
                     indicator='NY.GDP.MKTP.CD',
                     countries=['US', 'CN', 'JP', 'DE', 'GB', 'IN', 'FR', 'BR', 'CA', 'KR'],
@@ -714,17 +715,23 @@ class ProductionPipeline:
                     end_year=2023,
                 )
                 if wb_df is not None and not wb_df.empty:
-                    # Pivot: index=country, columns=year, values=value
+                    logger.info('[dataforge] World Bank raw: %d rows, columns=%s',
+                                len(wb_df), list(wb_df.columns))
                     pivot = wb_df.pivot_table(
                         index='country', columns='year', values='value', aggfunc='first',
                     )
                     pivot.columns = [str(c) for c in pivot.columns]
                     pivot = pivot.dropna(axis=1, how='all').dropna(axis=0, how='all')
+                    logger.info('[dataforge] World Bank pivot: %d countries x %d years',
+                                len(pivot), len(pivot.columns))
                     if len(pivot) >= 3 and len(pivot.columns) >= 3:
                         df = pivot
-                        logger.info("[dataforge] World Bank data: %s", df.shape)
+                    else:
+                        logger.warning('[dataforge] World Bank pivot too small: %s', pivot.shape)
+                else:
+                    logger.warning('[dataforge] World Bank returned empty DataFrame')
             except Exception as e:
-                logger.warning("[dataforge] World Bank fetch failed: %s", e)
+                logger.error("[dataforge] World Bank fetch failed: %s", e, exc_info=True)
 
             if df is None:
                 logger.warning("[dataforge] Using fallback GDP sample data")
@@ -796,6 +803,10 @@ class ProductionPipeline:
             logger.info("[dataforge] Step 6 complete: %s", video_path)
 
             # --- Steps 7-12: post-production ---
+            # Override YouTube title for bar race (not from script hook)
+            years = list(df.columns)
+            script_result._youtube_title = f"Top 10 Economies by GDP: {years[0]}-{years[-1]}"
+
             return self._post_production(
                 story_id, video_path, vo_result.audio_path,
                 metric_name, data_source, script_result, result,

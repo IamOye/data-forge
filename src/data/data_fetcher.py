@@ -450,12 +450,18 @@ class DataFetcher:
                 'format': 'json',
                 'per_page': 1000,
             }
-            resp = requests.get(url, params=params, timeout=15)
+            logger.info('[dataforge] World Bank API: GET %s params=%s', url, params)
+            resp = requests.get(url, params=params, timeout=30)
+            logger.info('[dataforge] World Bank response: status=%d, length=%d',
+                        resp.status_code, len(resp.content))
             resp.raise_for_status()
             data = resp.json()
 
-            if len(data) < 2 or not data[1]:
-                logger.warning('[dataforge] World Bank returned no data for %s', indicator)
+            if not isinstance(data, list) or len(data) < 2 or not data[1]:
+                logger.warning(
+                    '[dataforge] World Bank returned no data for %s (response type=%s, len=%s)',
+                    indicator, type(data).__name__, len(data) if isinstance(data, list) else 'N/A',
+                )
                 return pd.DataFrame()
 
             rows = []
