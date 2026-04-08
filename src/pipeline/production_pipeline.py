@@ -428,13 +428,15 @@ class ProductionPipeline:
         Route to the correct format-specific production method.
 
         Args:
-            format_type: 'kinetic' or 'bar_race'
+            format_type: 'kinetic', 'bar_race', or 'split'
 
         Returns:
             Dict with keys: success, story_id, video_id, youtube_url, error
         """
         if format_type == "bar_race":
             return self._produce_bar_race()
+        elif format_type == "split":
+            return self._produce_split()
         else:
             return self._produce_kinetic()
 
@@ -820,6 +822,186 @@ class ProductionPipeline:
             except Exception:
                 pass
             _send_telegram(f"DataForge BAR_RACE CRASHED\nStory: {story_id}\nError: {e}")
+            return result
+
+    # ------------------------------------------------------------------
+    # Format 3: Split Screen
+    # ------------------------------------------------------------------
+
+    def _produce_split(self) -> dict[str, Any]:
+        """Full split-screen (Format 3) production flow — compares two FRED metrics."""
+        story_id = f"df_sp_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        result: dict[str, Any] = {
+            "success": False, "story_id": story_id,
+            "video_id": None, "youtube_url": None, "error": None,
+        }
+
+        try:
+            # --- Quota check ---
+            has_budget, units_used = _check_quota(self.db_path)
+            if not has_budget:
+                result["error"] = f"YouTube quota exhausted: {units_used}/{YOUTUBE_DAILY_BUDGET}"
+                logger.warning("[dataforge] %s", result["error"])
+                return result
+            logger.info("[dataforge] Quota OK: %d/%d units used", units_used, YOUTUBE_DAILY_BUDGET)
+
+            # --- Step 1: Fetch TWO FRED series via day-of-year rotation ---
+            logger.info("[dataforge] [split] Step 1: Fetching two FRED series...")
+            from src.data.data_fetcher import DataFetcher
+
+            fetcher = DataFetcher()
+            data_source = "FRED"
+
+            FRED_SERIES = [
+                ('FEDFUNDS',          'Fed Funds Rate',        '%'),
+                ('CPIAUCSL',          'US Inflation (CPI)',    '%'),
+                ('UNRATE',            'US Unemployment Rate',  '%'),
+                ('MORTGAGE30US',      '30-Year Mortgage Rate', '%'),
+                ('T10Y2Y',            'Yield Curve Spread',    'pts'),
+                ('DCOILWTICO',        'WTI Crude Oil',         '$'),
+                ('GOLDAMGBD228NLBM',  'Gold Price',            '$'),
+                ('DEXUSEU',           'EUR/USD Exchange Rate',  '$'),
+                ('SP500',             'S&P 500 Index',         'pts'),
+                ('NASDAQCOM',         'NASDAQ Composite',      'pts'),
+                ('VIXCLS',            'VIX Fear Index',        'pts'),
+                ('DEXJPUS',           'USD/JPY Exchange Rate',  'Y'),
+                ('BAMLH0A0HYM2',     'High Yield Spread',     'pts'),
+                ('UMCSENT',           'Consumer Sentiment',    'pts'),
+            ]
+
+            day_index = datetime.utcnow().timetuple().tm_yday
+            idx_a = day_index % len(FRED_SERIES)
+            idx_b = (day_index + 1) % len(FRED_SERIES)
+            series_a = FRED_SERIES[idx_a]
+            series_b = FRED_SERIES[idx_b]
+
+            logger.info("[dataforge] Split rotation: day %d -> %s vs %s",
+                        day_index, series_a[1], series_b[1])
+
+            # Fetch metric A
+            metric_a = None
+            try:
+                df_a = fetcher.fetch_fred_series(series_a[0], periods=2)
+                if df_a is not None and len(df_a) >= 2:
+                    cur_a = float(df_a.iloc[-1]['value'] if 'value' in df_a.columns else df_a.iloc[-1])
+                    prev_a = float(df_a.iloc[-2]['value'] if 'value' in df_a.columns else df_a.iloc[-2])
+                    metric_a = {'name': series_a[1], 'current': cur_a, 'prev': prev_a, 'unit': series_a[2]}
+                    logger.info("[dataforge] Metric A: %s = %.4f (prev %.4f)", series_a[1], cur_a, prev_a)
+            except Exception as e:
+                logger.warning("[dataforge] FRED %s failed: %s", series_a[0], e)
+
+            # Fetch metric B
+            metric_b = None
+            try:
+                df_b = fetcher.fetch_fred_series(series_b[0], periods=2)
+                if df_b is not None and len(df_b) >= 2:
+                    cur_b = float(df_b.iloc[-1]['value'] if 'value' in df_b.columns else df_b.iloc[-1])
+                    prev_b = float(df_b.iloc[-2]['value'] if 'value' in df_b.columns else df_b.iloc[-2])
+                    metric_b = {'name': series_b[1], 'current': cur_b, 'prev': prev_b, 'unit': series_b[2]}
+                    logger.info("[dataforge] Metric B: %s = %.4f (prev %.4f)", series_b[1], cur_b, prev_b)
+            except Exception as e:
+                logger.warning("[dataforge] FRED %s failed: %s", series_b[0], e)
+
+            # Fallback to crypto if either FRED series failed
+            if metric_a is None or metric_b is None:
+                logger.warning("[dataforge] FRED incomplete — falling back to crypto for missing slot(s)")
+                try:
+                    crypto = fetcher.fetch_crypto_movers(top_n=10)
+                    if metric_a is None and len(crypto) >= 1:
+                        c = crypto[0]
+                        metric_a = {'name': c.metric_name, 'current': c.current_value,
+                                    'prev': c.prev_value, 'unit': '$'}
+                    if metric_b is None and len(crypto) >= 2:
+                        c = crypto[1]
+                        metric_b = {'name': c.metric_name, 'current': c.current_value,
+                                    'prev': c.prev_value, 'unit': '$'}
+                        data_source = "CoinGecko"
+                except Exception as e:
+                    logger.error("[dataforge] Crypto fallback also failed: %s", e)
+
+            if metric_a is None or metric_b is None:
+                result["error"] = "Cannot fetch two metrics for split screen (FRED + crypto both failed)"
+                logger.error("[dataforge] %s", result["error"])
+                return result
+
+            metric_name = f"{metric_a['name']} vs {metric_b['name']}"
+            logger.info("[dataforge] Step 1 complete: %s", metric_name)
+
+            # --- Step 2: News context ---
+            logger.info("[dataforge] [split] Step 2: Fetching news context...")
+            try:
+                news = fetcher.fetch_news_context(
+                    f"{metric_a['name']} {metric_b['name']}", max_results=2,
+                )
+                news_headlines = [h if isinstance(h, str) else str(h) for h in news]
+            except Exception:
+                news_headlines = []
+
+            # --- Step 3: Generate script ---
+            logger.info("[dataforge] [split] Step 3: Generating script...")
+            from src.content.script_adapter import ScriptAdapter
+            script_result = ScriptAdapter().generate(
+                metric_name=metric_name,
+                current_value=metric_a['current'],
+                prev_value=metric_a['prev'],
+                pct_change=0,
+                data_source=data_source,
+                news_context=news_headlines,
+                story_type="split",
+            )
+            if not script_result.is_valid:
+                result["error"] = f"Script invalid: {script_result.validation_errors}"
+                return result
+            logger.info("[dataforge] Step 3 complete: %d words", script_result.word_count)
+
+            # --- Step 4: Save story to DB ---
+            _save_story(
+                self.db_path, story_id, "split", data_source, metric_name,
+                metric_a['current'], metric_a['prev'], 0,
+                script_result.full_script, script_result.hook,
+            )
+
+            # --- Step 5: Generate voiceover ---
+            logger.info("[dataforge] [split] Step 5: Generating voiceover...")
+            from src.media.voiceover import VoiceoverGenerator
+            vo_result = VoiceoverGenerator(output_dir=RAW_DIR).generate(
+                script_dict=script_result.to_dict(), topic_id=story_id, category="money",
+            )
+            if not vo_result.is_valid:
+                _update_story_status(self.db_path, story_id, "VO_FAILED")
+                result["error"] = f"Voiceover failed: {vo_result.validation_errors}"
+                return result
+            logger.info("[dataforge] Step 5 complete: %.1fs", vo_result.duration_seconds)
+
+            # --- Step 6: Render split video ---
+            logger.info("[dataforge] [split] Step 6: Rendering split screen...")
+            from src.media.split_renderer import SplitRenderer
+            renderer = SplitRenderer(output_dir=RAW_DIR)
+            video_path = renderer.render(
+                metric_a=metric_a,
+                metric_b=metric_b,
+                duration_sec=vo_result.duration_seconds + 2.0,
+                story_id=story_id,
+                source_credit=f'Source: {data_source}',
+            )
+            logger.info("[dataforge] Step 6 complete: %s", video_path)
+
+            # --- Steps 7-12: post-production ---
+            script_result._youtube_title = f"{metric_a['name']} vs {metric_b['name']} | Today's Data"
+
+            return self._post_production(
+                story_id, video_path, vo_result.audio_path,
+                metric_name, data_source, script_result, result,
+            )
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error("[dataforge] Split pipeline crashed: %s", e, exc_info=True)
+            try:
+                _update_story_status(self.db_path, story_id, "FAILED")
+            except Exception:
+                pass
+            _send_telegram(f"DataForge SPLIT CRASHED\nStory: {story_id}\nError: {e}")
             return result
 
 
