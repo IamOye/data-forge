@@ -315,18 +315,31 @@ class KineticRenderer:
                 img = Image.alpha_composite(img, glow_layer)
                 draw = ImageDraw.Draw(img)
 
-                # Currency symbol — smaller, secondary, to the left of the number
+                # Currency/unit symbol — position depends on prefix vs suffix
                 num_bbox = draw.textbbox((number_x, number_y), display_value,
                                         font=current_font_number, anchor='mm')
-                curr_x = num_bbox[0] - 10
-                curr_y = num_bbox[1] + 15
-                draw.text(
-                    (curr_x, curr_y),
-                    currency,
-                    font=font_currency,
-                    fill=SECONDARY_COLOR,
-                    anchor='ra',
-                )
+                if self._is_suffix_unit(currency):
+                    # Suffix units (%, pts) go to the RIGHT of the number
+                    curr_x = num_bbox[2] + 10
+                    curr_y = num_bbox[1] + 15
+                    draw.text(
+                        (curr_x, curr_y),
+                        currency,
+                        font=font_currency,
+                        fill=SECONDARY_COLOR,
+                        anchor='la',
+                    )
+                else:
+                    # Prefix units ($, etc.) go to the LEFT of the number
+                    curr_x = num_bbox[0] - 10
+                    curr_y = num_bbox[1] + 15
+                    draw.text(
+                        (curr_x, curr_y),
+                        currency,
+                        font=font_currency,
+                        fill=SECONDARY_COLOR,
+                        anchor='ra',
+                    )
 
                 # Main hero number — explicit white (255,255,255)
                 draw.text(
@@ -530,24 +543,33 @@ class KineticRenderer:
         return 1 - (1 - t) ** 3
 
     @staticmethod
+    def _is_suffix_unit(unit: str) -> bool:
+        """Return True if unit should appear after the number (%, pts, etc.)."""
+        return unit in ('%', 'pts', 'Y')
+
+    @staticmethod
     def _format_value(value: float, currency: str = '$') -> str:
         """
         Format a number for display.
         Auto-abbreviates large numbers: T, B, M, K.
+        Suffix units (%, pts) go after the number; prefix units ($, etc.) go before.
         """
         abs_val = abs(value)
-        prefix = '-' if value < 0 else ''
+        sign = '-' if value < 0 else ''
+        suffix = KineticRenderer._is_suffix_unit(currency)
+        pre = '' if suffix else currency
+        post = currency if suffix else ''
         if abs_val >= 1_000_000_000_000:
-            return f'{prefix}{currency}{abs_val / 1_000_000_000_000:.2f}T'
+            return f'{sign}{pre}{abs_val / 1_000_000_000_000:.2f}T{post}'
         if abs_val >= 1_000_000_000:
-            return f'{prefix}{currency}{abs_val / 1_000_000_000:.2f}B'
+            return f'{sign}{pre}{abs_val / 1_000_000_000:.2f}B{post}'
         if abs_val >= 1_000_000:
-            return f'{prefix}{currency}{abs_val / 1_000_000:.2f}M'
+            return f'{sign}{pre}{abs_val / 1_000_000:.2f}M{post}'
         if abs_val >= 1_000:
-            return f'{prefix}{currency}{abs_val / 1_000:.1f}K'
+            return f'{sign}{pre}{abs_val / 1_000:.1f}K{post}'
         if abs_val < 1:
-            return f'{prefix}{currency}{value:.4f}'
-        return f'{prefix}{currency}{value:,.2f}'
+            return f'{sign}{pre}{abs_val:.4f}{post}'
+        return f'{sign}{pre}{value:,.2f}{post}'
 
     @staticmethod
     def _frames_to_mp4(
@@ -653,6 +675,8 @@ def test_render():
         (4_500_000, '$', '$4.50M'),
         (1375.34, '$', '$1.4K'),
         (0.000423, '$', '$0.0004'),
+        (3.64, '%', '3.64%'),
+        (42.5, 'pts', '42.50pts'),
     ]
     print('\n  Format tests:')
     for val, sym, expected in tests:
