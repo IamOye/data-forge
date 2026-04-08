@@ -20,6 +20,7 @@ Usage:
 
 import logging
 import os
+import time
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -275,41 +276,44 @@ class DataFetcher:
     def fetch_fred_series(self, series_id: str, periods: int = 24):
         """
         Fetch last N periods of a FRED economic series.
-
-        Common series_ids:
-            'CPIAUCSL'    — CPI (inflation)
-            'UNRATE'      — Unemployment rate
-            'FEDFUNDS'    — Federal funds rate
-            'MORTGAGE30US'— 30-year mortgage rate
-            'GDP'         — US GDP
-            'M2SL'        — M2 money supply
+        Retries up to 3 times with 2-second delay on failure.
 
         Returns:
             pd.DataFrame with columns ['date', 'value'] or empty DataFrame on failure.
         """
-        try:
-            import pandas as pd
-            from fredapi import Fred
+        import pandas as pd
 
-            if not FRED_API_KEY:
-                logger.error('[dataforge] FRED_API_KEY not set')
-                return pd.DataFrame()
-
-            fred = Fred(api_key=FRED_API_KEY)
-            series = fred.get_series(series_id)
-            df = series.reset_index()
-            df.columns = ['date', 'value']
-            df = df.dropna().tail(periods)
-            logger.info(
-                '[dataforge] fetch_fred_series: %s — %d periods retrieved',
-                series_id, len(df),
-            )
-            return df
-
-        except Exception as e:
-            logger.error('[dataforge] fetch_fred_series failed for %s: %s', series_id, e)
-            import pandas as pd
+        if not FRED_API_KEY:
+            logger.error('[dataforge] FRED_API_KEY not set')
             return pd.DataFrame()
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                from fredapi import Fred
+
+                fred = Fred(api_key=FRED_API_KEY)
+                series = fred.get_series(series_id)
+                df = series.reset_index()
+                df.columns = ['date', 'value']
+                df = df.dropna().tail(periods)
+                logger.info(
+                    '[dataforge] fetch_fred_series: %s — %d periods retrieved (attempt %d)',
+                    series_id, len(df), attempt,
+                )
+                return df
+
+            except Exception as e:
+                logger.warning(
+                    '[dataforge] fetch_fred_series attempt %d/%d failed for %s: %s',
+                    attempt, max_retries, series_id, e,
+                )
+                if attempt < max_retries:
+                    time.sleep(2)
+
+        logger.error('[dataforge] fetch_fred_series: all %d attempts failed for %s',
+                     max_retries, series_id)
+        return pd.DataFrame()
 
     # ------------------------------------------------------------------
     # BLS — US jobs data
