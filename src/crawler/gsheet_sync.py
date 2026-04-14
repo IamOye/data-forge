@@ -101,7 +101,8 @@ class GSheetSync:
         if len(self.credentials_path) > 500 or not os.path.exists(self.credentials_path):
             # Likely base64-encoded JSON, not a file path
             try:
-                sa_json = _b64.b64decode(self.credentials_path).decode('utf-8')
+                padded = self.credentials_path + '=' * (-len(self.credentials_path) % 4)
+                sa_json = _b64.b64decode(padded).decode('utf-8')
                 tf = _tmp.NamedTemporaryFile(
                     mode='w', suffix='.json', delete=False,
                 )
