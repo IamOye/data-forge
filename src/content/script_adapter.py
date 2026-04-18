@@ -99,6 +99,7 @@ class ScriptResult:
     validation_errors: list[str] = field(default_factory=list)
     raw_response: str = ""
     generated_at: str = ""
+    quality_scores: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.generated_at:
@@ -116,6 +117,7 @@ class ScriptResult:
             "is_valid":          self.is_valid,
             "validation_errors": self.validation_errors,
             "generated_at":      self.generated_at,
+            "quality_scores":    self.quality_scores,
         }
 
 
@@ -225,6 +227,48 @@ class ScriptAdapter:
             )
         logger.info('[dataforge] Script word count: %d words', result.word_count)
 
+        # Score the script — regenerate once if any dimension < 7
+        scores = self._score_script(result, client)
+        regenerated = False
+        if scores and any(scores.get(d, 10) < 7 for d in ["clarity", "urgency", "specificity", "hook_strength"]):
+            low_dims = [d for d in ["clarity", "urgency", "specificity", "hook_strength"] if scores.get(d, 10) < 7]
+            logger.warning(
+                "[dataforge] Script quality below threshold on: %s — regenerating",
+                low_dims,
+            )
+            retry_prompt = (
+                f"{prompt}\n\n"
+                f"Your previous script scored low on: {', '.join(low_dims)}.\n"
+                f"Rewrite with stronger {' and '.join(low_dims)}. "
+                f"Keep the same data. Same 50-60 word limit."
+            )
+            try:
+                message2 = client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                )
+                raw2 = message2.content[0].text.strip()
+                parts2 = self._parse_parts(raw2)
+                if all(parts2.get(p, "").strip() for p in REQUIRED_PARTS):
+                    if parts2.get("cta", "").strip() != FIXED_CTA:
+                        parts2["cta"] = FIXED_CTA
+                    result2 = self._build_result(metric_name, parts2, raw2)
+                    scores2 = self._score_script(result2, client)
+                    if scores2 and scores2.get("avg_score", 0) > scores.get("avg_score", 0):
+                        result2.quality_scores = scores2
+                        result2.quality_scores["regenerated"] = True
+                        logger.info("[dataforge] Regenerated script accepted: avg=%.2f", scores2.get("avg_score", 0))
+                        return result2
+                    else:
+                        logger.info("[dataforge] Regenerated script not better — keeping original")
+            except Exception as e:
+                logger.warning("[dataforge] Script regeneration failed: %s", e)
+            regenerated = True
+
+        scores["regenerated"] = regenerated
+        result.quality_scores = scores
         return result
 
     # ------------------------------------------------------------------
@@ -383,6 +427,59 @@ class ScriptAdapter:
         if cta.strip() and cta.strip() != FIXED_CTA:
             errors.append(f"CTA does not match fixed text. Got: {cta!r}")
         return errors
+
+    def _score_script(
+        self,
+        script_result: "ScriptResult",
+        client: "anthropic.Anthropic",
+    ) -> dict:
+        """
+        Score a generated script on 4 dimensions using Claude.
+        Returns dict with keys: clarity, urgency, specificity, hook_strength, avg_score.
+        Returns empty dict on failure.
+        """
+        score_prompt = (
+            f"Score this 35-40 second YouTube Shorts finance script on 4 dimensions. "
+            f"Return ONLY a JSON object, no markdown.\n\n"
+            f"Script:\n{script_result.full_script}\n\n"
+            f"Score each dimension 1-10:\n"
+            f"- clarity: Is it easy to understand for a non-finance person?\n"
+            f"- urgency: Does it feel urgent and timely?\n"
+            f"- specificity: Are the cause and numbers specific and named?\n"
+            f"- hook_strength: Does the opening hook grab attention immediately?\n\n"
+            f"Respond ONLY with: "
+            f'{{ "clarity": N, "urgency": N, "specificity": N, "hook_strength": N }}'
+        )
+        try:
+            message = client.messages.create(
+                model=self.model,
+                max_tokens=100,
+                messages=[{"role": "user", "content": score_prompt}],
+            )
+            raw = message.content[0].text.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            scores = json.loads(raw)
+            clarity      = int(scores.get("clarity", 0))
+            urgency      = int(scores.get("urgency", 0))
+            specificity  = int(scores.get("specificity", 0))
+            hook_strength = int(scores.get("hook_strength", 0))
+            avg = round((clarity + urgency + specificity + hook_strength) / 4, 2)
+            result = {
+                "clarity":      clarity,
+                "urgency":      urgency,
+                "specificity":  specificity,
+                "hook_strength": hook_strength,
+                "avg_score":    avg,
+            }
+            logger.info(
+                "[dataforge] Script scores: clarity=%d urgency=%d specificity=%d "
+                "hook=%d avg=%.2f",
+                clarity, urgency, specificity, hook_strength, avg,
+            )
+            return result
+        except Exception as e:
+            logger.warning("[dataforge] _score_script failed: %s", e)
+            return {}
 
     @staticmethod
     def _error_result(metric_name: str, error: str) -> ScriptResult:

@@ -130,6 +130,20 @@ def _ensure_tables(db_path: str) -> None:
                 likes           INTEGER DEFAULT 0,
                 recorded_at     TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS script_quality (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                story_id        TEXT NOT NULL,
+                metric_name     TEXT,
+                format          TEXT,
+                clarity         INTEGER,
+                urgency         INTEGER,
+                specificity     INTEGER,
+                hook_strength   INTEGER,
+                avg_score       REAL,
+                regenerated     INTEGER DEFAULT 0,
+                word_count      INTEGER,
+                recorded_at     TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT
@@ -678,6 +692,37 @@ class ProductionPipeline:
             except Exception as e:
                 logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
 
+            # Write script quality scores to DB
+            try:
+                q = script_result.quality_scores
+                if q:
+                    conn = sqlite3.connect(self.db_path)
+                    try:
+                        conn.execute(
+                            """INSERT INTO script_quality
+                               (story_id, metric_name, format, clarity, urgency,
+                                specificity, hook_strength, avg_score, regenerated,
+                                word_count, recorded_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                story_id, metric_name, "kinetic",
+                                q.get("clarity"), q.get("urgency"),
+                                q.get("specificity"), q.get("hook_strength"),
+                                q.get("avg_score"), 1 if q.get("regenerated") else 0,
+                                script_result.word_count,
+                                datetime.now(timezone.utc).isoformat(),
+                            ),
+                        )
+                        conn.commit()
+                        logger.info(
+                            "[dataforge] Step 4: quality scores saved for %s avg=%.2f",
+                            story_id, q.get("avg_score", 0),
+                        )
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: quality score save failed (non-fatal): %s", e)
+
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] Step 5: Generating voiceover...")
             from src.media.voiceover import VoiceoverGenerator
@@ -835,6 +880,37 @@ class ProductionPipeline:
                 logger.info("[dataforge] Step 4: GSheet write_story complete for %s", story_id)
             except Exception as e:
                 logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
+
+            # Write script quality scores to DB
+            try:
+                q = script_result.quality_scores
+                if q:
+                    conn = sqlite3.connect(self.db_path)
+                    try:
+                        conn.execute(
+                            """INSERT INTO script_quality
+                               (story_id, metric_name, format, clarity, urgency,
+                                specificity, hook_strength, avg_score, regenerated,
+                                word_count, recorded_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                story_id, metric_name, "bar_race",
+                                q.get("clarity"), q.get("urgency"),
+                                q.get("specificity"), q.get("hook_strength"),
+                                q.get("avg_score"), 1 if q.get("regenerated") else 0,
+                                script_result.word_count,
+                                datetime.now(timezone.utc).isoformat(),
+                            ),
+                        )
+                        conn.commit()
+                        logger.info(
+                            "[dataforge] Step 4: quality scores saved for %s avg=%.2f",
+                            story_id, q.get("avg_score", 0),
+                        )
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: quality score save failed (non-fatal): %s", e)
 
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] [bar_race] Step 5: Generating voiceover...")
@@ -1036,6 +1112,37 @@ class ProductionPipeline:
             except Exception as e:
                 logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
 
+            # Write script quality scores to DB
+            try:
+                q = script_result.quality_scores
+                if q:
+                    conn = sqlite3.connect(self.db_path)
+                    try:
+                        conn.execute(
+                            """INSERT INTO script_quality
+                               (story_id, metric_name, format, clarity, urgency,
+                                specificity, hook_strength, avg_score, regenerated,
+                                word_count, recorded_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                story_id, metric_name, "split",
+                                q.get("clarity"), q.get("urgency"),
+                                q.get("specificity"), q.get("hook_strength"),
+                                q.get("avg_score"), 1 if q.get("regenerated") else 0,
+                                script_result.word_count,
+                                datetime.now(timezone.utc).isoformat(),
+                            ),
+                        )
+                        conn.commit()
+                        logger.info(
+                            "[dataforge] Step 4: quality scores saved for %s avg=%.2f",
+                            story_id, q.get("avg_score", 0),
+                        )
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: quality score save failed (non-fatal): %s", e)
+
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] [split] Step 5: Generating voiceover...")
             from src.media.voiceover import VoiceoverGenerator
@@ -1176,6 +1283,37 @@ class ProductionPipeline:
                 logger.info("[dataforge] Step 4: GSheet write_story complete for %s", story_id)
             except Exception as e:
                 logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
+
+            # Write script quality scores to DB
+            try:
+                q = script_result.quality_scores
+                if q:
+                    conn = sqlite3.connect(self.db_path)
+                    try:
+                        conn.execute(
+                            """INSERT INTO script_quality
+                               (story_id, metric_name, format, clarity, urgency,
+                                specificity, hook_strength, avg_score, regenerated,
+                                word_count, recorded_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                story_id, metric_name, "narrative",
+                                q.get("clarity"), q.get("urgency"),
+                                q.get("specificity"), q.get("hook_strength"),
+                                q.get("avg_score"), 1 if q.get("regenerated") else 0,
+                                script_result.word_count,
+                                datetime.now(timezone.utc).isoformat(),
+                            ),
+                        )
+                        conn.commit()
+                        logger.info(
+                            "[dataforge] Step 4: quality scores saved for %s avg=%.2f",
+                            story_id, q.get("avg_score", 0),
+                        )
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: quality score save failed (non-fatal): %s", e)
 
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] [narrative] Step 5: Generating voiceover...")
