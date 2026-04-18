@@ -64,13 +64,13 @@ DATA_CACHE: dict[str, Any] = {}
 # Columns: morning(07:00), midday(13:00), evening(19:00), midnight(01:00)
 
 FORMAT_ROTATION = [
-    ("kinetic",   "countdown", "bar_race",  "split"),     # Mon
-    ("narrative", "bar_race",  "countdown", "kinetic"),   # Tue
-    ("countdown", "kinetic",   "bar_race",  "narrative"), # Wed
-    ("split",     "narrative", "countdown", "bar_race"),  # Thu
-    ("kinetic",   "split",     "bar_race",  "narrative"), # Fri
-    ("narrative", "countdown", "kinetic",   "split"),     # Sat
-    ("split",     "kinetic",   "bar_race",  "countdown"), # Sun
+    ("kinetic",    "countdown",  "bar_race",   "comparison"), # Mon
+    ("narrative",  "bar_race",   "comparison", "kinetic"),    # Tue
+    ("countdown",  "kinetic",    "bar_race",   "narrative"),  # Wed
+    ("comparison", "narrative",  "countdown",  "bar_race"),   # Thu
+    ("kinetic",    "comparison", "bar_race",   "narrative"),  # Fri
+    ("narrative",  "countdown",  "kinetic",    "comparison"), # Sat
+    ("comparison", "kinetic",    "bar_race",   "countdown"),  # Sun
 ]
 
 SLOT_INDEX = {
@@ -567,7 +567,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 return
             try:
                 fmt = "kinetic"
-                if context.args and context.args[0] in ("kinetic", "narrative", "bar_race", "split", "countdown"):
+                if context.args and context.args[0] in ("kinetic", "narrative", "bar_race", "split", "countdown", "comparison"):
                     fmt = context.args[0]
                 await update.message.reply_text(f"Starting manual production run ({fmt})...")
                 t = threading.Thread(
@@ -590,7 +590,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 "  /stats   - Total uploads and views\n"
                 "  /quota   - YouTube quota usage\n"
                 "  /refresh - Refresh data cache\n"
-                "  /produce [kinetic|narrative|bar_race|split|countdown] - Manual production run\n"
+                "  /produce [kinetic|narrative|bar_race|split|countdown|comparison] - Manual production run\n"
                 "  /skip    - Skip next queued story\n"
                 "  /help    - Show this message"
             )

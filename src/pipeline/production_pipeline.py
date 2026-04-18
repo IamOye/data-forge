@@ -554,6 +554,8 @@ class ProductionPipeline:
             return self._produce_split()
         elif format_type == "countdown":
             return self._produce_countdown()
+        elif format_type == "comparison":
+            return self._produce_comparison()
         else:
             return self._produce_kinetic()
 
@@ -1565,6 +1567,234 @@ class ProductionPipeline:
             except Exception:
                 pass
             _send_telegram(f"DataForge SPLIT CRASHED\nStory: {story_id}\nError: {e}")
+            return result
+
+    # ------------------------------------------------------------------
+    # Format 6: Comparison Ticker
+    # ------------------------------------------------------------------
+
+    def _produce_comparison(self) -> dict[str, Any]:
+        """Full comparison ticker (Format 6) production flow — two FRED metrics racing."""
+        story_id = f"df_cp_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        result: dict[str, Any] = {
+            "success": False, "story_id": story_id,
+            "video_id": None, "youtube_url": None, "error": None,
+        }
+
+        try:
+            # --- Quota check ---
+            has_budget, units_used = _check_quota(self.db_path)
+            if not has_budget:
+                result["error"] = f"YouTube quota exhausted: {units_used}/{YOUTUBE_DAILY_BUDGET}"
+                logger.warning("[dataforge] %s", result["error"])
+                return result
+            logger.info("[dataforge] Quota OK: %d/%d units used", units_used, YOUTUBE_DAILY_BUDGET)
+
+            # --- Step 1: Fetch two FRED series via offset rotation ---
+            # Use day+2 offset from split to avoid same pair on same day
+            logger.info("[dataforge] [comparison] Step 1: Fetching two FRED series...")
+            from src.data.data_fetcher import DataFetcher
+            fetcher = DataFetcher()
+            data_source = "FRED"
+
+            FRED_PAIRS = [
+                ('FEDFUNDS',         'Fed Funds Rate',        '%',
+                 'MORTGAGE30US',     '30-Year Mortgage Rate', '%'),
+                ('CPIAUCSL',         'US Inflation (CPI)',    '%',
+                 'UNRATE',           'US Unemployment Rate',  '%'),
+                ('SP500',            'S&P 500 Index',         'pts',
+                 'NASDAQCOM',        'NASDAQ Composite',      'pts'),
+                ('DCOILWTICO',       'WTI Crude Oil',         '$',
+                 'GOLDAMGBD228NLBM', 'Gold Price',            '$'),
+                ('T10Y2Y',           'Yield Curve Spread',    'pts',
+                 'BAMLH0A0HYM2',     'High Yield Spread',     'pts'),
+                ('VIXCLS',           'VIX Fear Index',        'pts',
+                 'UMCSENT',          'Consumer Sentiment',    'pts'),
+                ('DEXUSEU',          'EUR/USD Rate',          '$',
+                 'DEXJPUS',          'USD/JPY Rate',          'Y'),
+            ]
+
+            day_index = datetime.utcnow().timetuple().tm_yday
+            pair_idx = (day_index + 2) % len(FRED_PAIRS)
+            pair = FRED_PAIRS[pair_idx]
+            sid_a, label_a, unit_a, sid_b, label_b, unit_b = pair
+
+            logger.info("[dataforge] Comparison pair: %s vs %s", label_a, label_b)
+
+            metric_a = None
+            metric_b = None
+
+            try:
+                df_a = fetcher.fetch_fred_series(sid_a, periods=2)
+                if df_a is not None and len(df_a) >= 2:
+                    cur_a  = float(df_a.iloc[-1]['value'])
+                    prev_a = float(df_a.iloc[-2]['value'])
+                    metric_a = {'name': label_a, 'current': cur_a, 'prev': prev_a, 'unit': unit_a}
+                    logger.info("[dataforge] Metric A: %s = %.4f", label_a, cur_a)
+            except Exception as e:
+                logger.warning("[dataforge] FRED %s failed: %s", sid_a, e)
+
+            try:
+                df_b = fetcher.fetch_fred_series(sid_b, periods=2)
+                if df_b is not None and len(df_b) >= 2:
+                    cur_b  = float(df_b.iloc[-1]['value'])
+                    prev_b = float(df_b.iloc[-2]['value'])
+                    metric_b = {'name': label_b, 'current': cur_b, 'prev': prev_b, 'unit': unit_b}
+                    logger.info("[dataforge] Metric B: %s = %.4f", label_b, cur_b)
+            except Exception as e:
+                logger.warning("[dataforge] FRED %s failed: %s", sid_b, e)
+
+            # Fallback: crypto pair if FRED fails
+            if metric_a is None or metric_b is None:
+                logger.warning("[dataforge] FRED incomplete — falling back to crypto pair")
+                try:
+                    crypto = fetcher.fetch_crypto_movers(top_n=10)
+                    if metric_a is None and len(crypto) >= 1:
+                        c = crypto[0]
+                        metric_a = {'name': c.metric_name, 'current': c.current_value,
+                                    'prev': c.prev_value, 'unit': '$'}
+                        data_source = "CoinGecko"
+                    if metric_b is None and len(crypto) >= 2:
+                        c = crypto[1]
+                        metric_b = {'name': c.metric_name, 'current': c.current_value,
+                                    'prev': c.prev_value, 'unit': '$'}
+                        data_source = "CoinGecko"
+                except Exception as e:
+                    logger.error("[dataforge] Crypto fallback failed: %s", e)
+
+            if metric_a is None or metric_b is None:
+                result["error"] = "Cannot fetch two metrics for comparison (FRED + crypto both failed)"
+                logger.error("[dataforge] %s", result["error"])
+                return result
+
+            metric_name = f"{metric_a['name']} vs {metric_b['name']}"
+            logger.info("[dataforge] Step 1 complete: %s", metric_name)
+
+            # --- Step 2: News context ---
+            logger.info("[dataforge] [comparison] Step 2: Fetching news context...")
+            try:
+                news = fetcher.fetch_news_context(
+                    f"{metric_a['name']} {metric_b['name']}", max_results=2,
+                )
+                news_headlines = [h if isinstance(h, str) else str(h) for h in news]
+            except Exception:
+                news_headlines = []
+
+            # --- Step 3: Generate script ---
+            logger.info("[dataforge] [comparison] Step 3: Generating script...")
+            pct_a = ((metric_a['current'] - metric_a['prev']) / abs(metric_a['prev']) * 100) if metric_a['prev'] else 0.0
+            pct_b = ((metric_b['current'] - metric_b['prev']) / abs(metric_b['prev']) * 100) if metric_b['prev'] else 0.0
+            winner = metric_a if pct_a >= pct_b else metric_b
+            loser  = metric_b if pct_a >= pct_b else metric_a
+
+            from src.content.script_adapter import ScriptAdapter
+            script_result = ScriptAdapter().generate(
+                metric_name=metric_name,
+                current_value=winner['current'],
+                prev_value=winner['prev'],
+                pct_change=max(pct_a, pct_b),
+                data_source=data_source,
+                news_context=news_headlines,
+                story_type="comparison",
+            )
+            if not script_result.is_valid:
+                result["error"] = f"Script invalid: {script_result.validation_errors}"
+                return result
+            logger.info("[dataforge] Step 3 complete: %d words", script_result.word_count)
+
+            # --- Step 4: Save story to DB ---
+            _save_story(
+                self.db_path, story_id, "comparison", data_source, metric_name,
+                metric_a['current'], metric_a['prev'], pct_a,
+                script_result.full_script, script_result.hook,
+            )
+
+            try:
+                from src.crawler.gsheet_sync import GSheetSync
+                gsheet = GSheetSync()
+                gsheet.write_story({
+                    "story_id": story_id, "metric": metric_name,
+                    "format": "comparison", "status": "QUEUED",
+                    "hook": script_result.hook, "source": data_source,
+                })
+                logger.info("[dataforge] Step 4: GSheet write_story complete for %s", story_id)
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
+
+            try:
+                q = script_result.quality_scores
+                if q:
+                    conn = sqlite3.connect(self.db_path)
+                    try:
+                        conn.execute(
+                            """INSERT INTO script_quality
+                               (story_id, metric_name, format, clarity, urgency,
+                                specificity, hook_strength, avg_score, regenerated,
+                                word_count, recorded_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                story_id, metric_name, "comparison",
+                                q.get("clarity"), q.get("urgency"),
+                                q.get("specificity"), q.get("hook_strength"),
+                                q.get("avg_score"), 1 if q.get("regenerated") else 0,
+                                script_result.word_count,
+                                datetime.now(timezone.utc).isoformat(),
+                            ),
+                        )
+                        conn.commit()
+                        logger.info(
+                            "[dataforge] Step 4: quality scores saved for %s avg=%.2f",
+                            story_id, q.get("avg_score", 0),
+                        )
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: quality score save failed (non-fatal): %s", e)
+
+            # --- Step 5: Generate voiceover ---
+            logger.info("[dataforge] [comparison] Step 5: Generating voiceover...")
+            from src.media.voiceover import VoiceoverGenerator
+            vo_result = VoiceoverGenerator(output_dir=RAW_DIR).generate(
+                script_dict=script_result.to_dict(), topic_id=story_id, category="money",
+            )
+            if not vo_result.is_valid:
+                _update_story_status(self.db_path, story_id, "VO_FAILED")
+                result["error"] = f"Voiceover failed: {vo_result.validation_errors}"
+                return result
+            logger.info("[dataforge] Step 5 complete: %.1fs", vo_result.duration_seconds)
+
+            # --- Step 6: Render comparison video ---
+            logger.info("[dataforge] [comparison] Step 6: Rendering comparison ticker...")
+            from src.media.comparison_renderer import ComparisonRenderer
+            renderer = ComparisonRenderer(output_dir=RAW_DIR)
+            import datetime as _dt
+            _today = _dt.datetime.now().strftime("%b %d")
+            video_path = renderer.render(
+                metric_a=metric_a,
+                metric_b=metric_b,
+                duration_sec=vo_result.duration_seconds + 2.0,
+                story_id=story_id,
+                source_credit=f'Source: {data_source}',
+            )
+            logger.info("[dataforge] Step 6 complete: %s", video_path)
+
+            # --- Steps 7-12: post-production ---
+            script_result._youtube_title = f"{metric_a['name']} vs {metric_b['name']} | {_today}"
+
+            return self._post_production(
+                story_id, video_path, vo_result.audio_path,
+                metric_name, data_source, script_result, result,
+                format_type="comparison",
+            )
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error("[dataforge] Comparison pipeline crashed: %s", e, exc_info=True)
+            try:
+                _update_story_status(self.db_path, story_id, "FAILED")
+            except Exception:
+                pass
+            _send_telegram(f"DataForge COMPARISON CRASHED\nStory: {story_id}\nError: {e}")
             return result
 
     # ------------------------------------------------------------------
