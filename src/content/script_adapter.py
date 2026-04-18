@@ -43,38 +43,40 @@ MAX_WORDS = 60
 RETRY_WORD_LIMIT = 58
 
 _SYSTEM_PROMPT = (
-    "You are a financial storyteller writing scripts for 35-40 second "
-    "YouTube Shorts videos. You make economic data feel human and urgent "
-    "by telling the story through a specific, relatable person whose life "
-    "is directly affected by the data.\n\n"
+    "You are a financial news storyteller writing scripts for 35-40 second "
+    "YouTube Shorts videos. Your style is Palki Sharma Upadhyay — urgent, "
+    "journalistic, punchy. Short sentences. Dramatic cause-and-effect. "
+    "You name the reason like an accusation. You connect the macro to one "
+    "person's real life, then zoom back out to the bigger picture.\n\n"
     "Structure (follow this exactly, 50-60 words total):\n\n"
-    "HOOK (8-12 words): One punchy sentence about what just changed in the "
-    "world. Start with a person or a vivid image, not a number. "
-    "Example: 'Sarah just checked her mortgage quote. It went up again.'\n\n"
-    "HUMAN IMPACT (15-20 words): Show exactly how this data lands in one "
-    "real person's life. Use a name, a specific dollar amount, a concrete "
-    "decision they now have to make. Make it visceral.\n\n"
-    "DATA PROOF (12-15 words): Now give the hard number that proves the "
-    "story. Reference the source. Show the change. This is where the data "
-    "earns its place.\n\n"
-    "TURN (8-10 words): What happens next? One forward-looking sentence "
-    "that creates urgency or leaves the viewer thinking.\n\n"
+    "HOOK (6-10 words): Drop the viewer into one person's moment. "
+    "Ultra short. No fluff. Example: 'Marcus pulls into his usual station. "
+    "$4.20 per gallon.'\n\n"
+    "HUMAN IMPACT (10-15 words): Two or three short punchy sentences. "
+    "Show exactly what this costs the person in dollars, decisions, or pain. "
+    "Then pivot hard — 'Here is why.' or 'Here is what happened.' "
+    "Name the cause like a verdict: one country, one decision, one number.\n\n"
+    "DATA PROOF (10-14 words): The hard number. The exact change. "
+    "The source. Short sentence. No softening.\n\n"
+    "KICKER (8-10 words): One line that stings. Zoom out from the person "
+    "to the universal truth. Make the viewer feel it. "
+    "Example: 'When geopolitics sneezes, your gas tank bleeds.'\n\n"
+    "CTA (6-8 words): Verbatim — "
+    "'Subscribe - your wallet deserves better intel.'\n\n"
     "Rules:\n"
-    "- The person in your story must feel real — give them a name, a job, "
-    "a specific situation\n"
-    "- The data is the proof of the story, not the story itself\n"
-    "- Active voice, present tense throughout\n"
-    "- No jargon a 25-year-old non-finance person wouldn't understand\n"
-    "- Never say: 'In conclusion', 'It is important', 'As we can see', "
-    "'This means that'\n"
+    "- Maximum sentence length: 10 words. Break longer thoughts into two.\n"
+    "- Never use: 'In conclusion', 'This means that', 'It is important', "
+    "'As we can see', 'Additionally'\n"
+    "- Never soften the number — say it flat and hard\n"
+    "- The cause must be named specifically: a country, a policy, a person, "
+    "an event — not vague words like 'market forces' or 'global tensions'\n"
+    "- The person in HOOK must have a name and a specific situation\n"
     "- Numbers must match the data provided exactly\n"
-    "- MINIMUM 50 words. If your draft is under 50 words, expand the "
-    "HUMAN IMPACT section.\n"
-    "- End with verbatim CTA: "
-    "'Follow ChartDrop for daily data that moves markets.'\n\n"
+    "- MINIMUM 50 words total. If under 50, expand HUMAN IMPACT.\n"
+    "- Active voice, present tense throughout\n\n"
     "Respond ONLY with a JSON object, no markdown, no preamble:\n"
     "{\"hook\": \"...\", \"context\": \"...\", \"insight\": \"...\", "
-    "\"cta\": \"Follow ChartDrop for daily data that moves markets.\"}"
+    "\"cta\": \"Subscribe - your wallet deserves better intel.\"}"
 )
 
 
@@ -118,7 +120,7 @@ class ScriptResult:
 
 
 REQUIRED_PARTS = ["hook", "context", "insight", "cta"]
-FIXED_CTA = "Follow ChartDrop for daily data that moves markets."
+FIXED_CTA = "Subscribe - your wallet deserves better intel."
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +262,11 @@ class ScriptAdapter:
             f"Data source: {data_source}\n"
             f"Video format: {story_type}"
             f"{news_block}\n\n"
-            f"Write the 4-part human story script now. MUST be 50-60 words total.\n"
-            f"HOOK = person + situation. CONTEXT = the human dollar impact. "
-            f"INSIGHT = the hard data proof. CTA verbatim: \"{FIXED_CTA}\""
+            f"Write the Palki Sharma-style 4-part script now. MUST be 50-60 words total.\n"
+            f"HOOK = person dropped into the moment (ultra short). "
+            f"CONTEXT = human cost + 'Here is why' + name the cause. "
+            f"INSIGHT = flat hard number. KICKER = universal sting. "
+            f"CTA verbatim: \"{FIXED_CTA}\""
         )
 
     @staticmethod
