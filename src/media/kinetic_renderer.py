@@ -151,6 +151,7 @@ class KineticRenderer:
         accent_color: str = '#00D4AA',
         story_id: str = 'kinetic_000',
         source_credit: str = 'Source: Yahoo Finance',
+        script_text: str = '',
     ) -> str:
         """
         Render a kinetic number animation to MP4.
@@ -464,6 +465,45 @@ class KineticRenderer:
 
                 # Horizontal rule below
                 draw.line([(60, 1482), (1020, 1482)], fill=RULE_COLOR, width=1)
+
+                # ===== ZONE 5 — SCRIPT TEXT (y: 1500-1800) =====
+                if script_text:
+                    font_script = self._load_font(38)
+                    script_margin = 60
+                    script_max_width = FRAME_W - (script_margin * 2)
+                    script_y = 1510
+
+                    # Word-wrap the script text
+                    words = script_text.split()
+                    lines = []
+                    current_line = []
+                    tmp_draw = ImageDraw.Draw(img)
+                    for word in words:
+                        test_line = ' '.join(current_line + [word])
+                        bbox = tmp_draw.textbbox((0, 0), test_line, font=font_script)
+                        line_width = bbox[2] - bbox[0]
+                        if line_width <= script_max_width:
+                            current_line.append(word)
+                        else:
+                            if current_line:
+                                lines.append(' '.join(current_line))
+                            current_line = [word]
+                    if current_line:
+                        lines.append(' '.join(current_line))
+
+                    # Draw each line
+                    line_height = 52
+                    for line_idx, line in enumerate(lines):
+                        line_y = script_y + (line_idx * line_height)
+                        if line_y > 1790:
+                            break
+                        draw.text(
+                            (script_margin, line_y),
+                            line,
+                            font=font_script,
+                            fill=(200, 200, 200, 220),
+                            anchor='la',
+                        )
 
                 # ===== ZONE 5 — BOTTOM INFO BAND (y: 1820-1920) =====
 

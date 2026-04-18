@@ -872,6 +872,7 @@ class ProductionPipeline:
                 duration_sec=vo_result.duration_seconds + 2.0,
                 story_id=story_id,
                 source_credit="Source: CoinGecko" if data_source == "coingecko" else f"Source: {data_source}",
+                script_text=script_result.full_script,
             )
             logger.info("[dataforge] Step 6 complete: %s", video_path)
 
