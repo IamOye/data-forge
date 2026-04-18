@@ -864,21 +864,39 @@ class DataFetcher:
 
             # Step 2: Ask Claude to pick the best headline and matching FRED series
             FRED_OPTIONS = {
-                'FEDFUNDS':         'Fed Funds Rate',
-                'CPIAUCSL':         'US Inflation (CPI)',
-                'UNRATE':           'US Unemployment Rate',
-                'MORTGAGE30US':     '30-Year Mortgage Rate',
-                'T10Y2Y':           'Yield Curve Spread',
-                'DCOILWTICO':       'WTI Crude Oil',
-                'GOLDAMGBD228NLBM': 'Gold Price',
-                'DEXUSEU':          'EUR/USD Exchange Rate',
-                'SP500':            'S&P 500 Index',
-                'NASDAQCOM':        'NASDAQ Composite',
-                'VIXCLS':           'VIX Fear Index',
-                'BAMLH0A0HYM2':     'High Yield Spread',
-                'UMCSENT':          'Consumer Sentiment',
-                'MORTGAGE15US':     '15-Year Mortgage Rate',
+                'FEDFUNDS':           'Fed Funds Rate',
+                'CPIAUCSL':           'US Inflation (CPI)',
+                'UNRATE':             'US Unemployment Rate',
+                'MORTGAGE30US':       '30-Year Mortgage Rate',
+                'T10Y2Y':             'Yield Curve Spread',
+                'DCOILWTICO':         'WTI Crude Oil',
+                'GOLDAMGBD228NLBM':   'Gold Price',
+                'DEXUSEU':            'EUR/USD Exchange Rate',
+                'SP500':              'S&P 500 Index',
+                'NASDAQCOM':          'NASDAQ Composite',
+                'VIXCLS':             'VIX Fear Index',
+                'BAMLH0A0HYM2':       'High Yield Spread',
+                'UMCSENT':            'Consumer Sentiment',
+                'MORTGAGE15US':       '15-Year Mortgage Rate',
                 'MEDLISPRIPERSQUFEE': 'Median Home Price per sq ft',
+            }
+
+            FRED_CURRENCY = {
+                'FEDFUNDS':           '%',
+                'CPIAUCSL':           '%',
+                'UNRATE':             '%',
+                'MORTGAGE30US':       '%',
+                'T10Y2Y':             'pts',
+                'DCOILWTICO':         '$',
+                'GOLDAMGBD228NLBM':   '$',
+                'DEXUSEU':            '$',
+                'SP500':              'pts',
+                'NASDAQCOM':          'pts',
+                'VIXCLS':             'pts',
+                'BAMLH0A0HYM2':       'pts',
+                'UMCSENT':            'pts',
+                'MORTGAGE15US':       '%',
+                'MEDLISPRIPERSQUFEE': '$',
             }
 
             fred_list = '\n'.join(f'  {k}: {v}' for k, v in FRED_OPTIONS.items())
@@ -939,7 +957,7 @@ class DataFetcher:
                 pct_change=round(pct, 2),
                 data_source='FRED',
                 date=str(datetime.now(timezone.utc).date()),
-                currency='%',
+                currency=FRED_CURRENCY.get(fred_series, '%'),
                 extra_meta={'series_id': fred_series, 'headline': selected_headline},
             )
 
