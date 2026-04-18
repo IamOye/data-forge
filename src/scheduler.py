@@ -55,6 +55,44 @@ DATA_CACHE: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
+# Format rotation — day-of-week schedule
+# ---------------------------------------------------------------------------
+# 4 slots x 7 days. No format repeats in same slot on consecutive days.
+# bar_race favours 19:00 (crypto markets most active evening).
+# kinetic/narrative favour 07:00 (morning news consumption).
+# Row index = weekday: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+# Columns: morning(07:00), midday(13:00), evening(19:00), midnight(01:00)
+
+FORMAT_ROTATION = [
+    ("kinetic",   "countdown", "bar_race",  "split"),     # Mon
+    ("narrative", "bar_race",  "countdown", "kinetic"),   # Tue
+    ("countdown", "kinetic",   "bar_race",  "narrative"), # Wed
+    ("split",     "narrative", "countdown", "bar_race"),  # Thu
+    ("kinetic",   "split",     "bar_race",  "narrative"), # Fri
+    ("narrative", "countdown", "kinetic",   "split"),     # Sat
+    ("split",     "kinetic",   "bar_race",  "countdown"), # Sun
+]
+
+SLOT_INDEX = {
+    "morning":  0,
+    "midday":   1,
+    "evening":  2,
+    "midnight": 3,
+}
+
+def _get_format_for_slot(slot: str) -> str:
+    """Return today's format type for the given slot name."""
+    weekday = datetime.now(timezone.utc).weekday()  # 0=Mon, 6=Sun
+    slot_idx = SLOT_INDEX.get(slot, 0)
+    fmt = FORMAT_ROTATION[weekday][slot_idx]
+    logger.info(
+        "[dataforge] Format rotation: slot=%s weekday=%d -> format=%s",
+        slot, weekday, fmt,
+    )
+    return fmt
+
+
+# ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
 
@@ -144,14 +182,13 @@ def data_refresh_job() -> None:
 
 
 def production_job(slot: str, format_type: str) -> None:
-    """Run the production pipeline for one slot."""
+    """Run the production pipeline for one slot using day-of-week rotation."""
     try:
-        # All 4 formats supported: kinetic, narrative, bar_race, split
-        actual_format = format_type
+        actual_format = _get_format_for_slot(slot)
 
         logger.info(
-            "[dataforge] production_job starting: slot=%s, format=%s",
-            slot, actual_format,
+            "[dataforge] production_job starting: slot=%s, scheduled=%s, actual=%s",
+            slot, format_type, actual_format,
         )
 
         from src.pipeline.production_pipeline import ProductionPipeline
@@ -530,7 +567,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 return
             try:
                 fmt = "kinetic"
-                if context.args and context.args[0] in ("kinetic", "narrative", "bar_race", "split"):
+                if context.args and context.args[0] in ("kinetic", "narrative", "bar_race", "split", "countdown"):
                     fmt = context.args[0]
                 await update.message.reply_text(f"Starting manual production run ({fmt})...")
                 t = threading.Thread(
@@ -553,7 +590,7 @@ def _setup_telegram_bot() -> threading.Thread | None:
                 "  /stats   - Total uploads and views\n"
                 "  /quota   - YouTube quota usage\n"
                 "  /refresh - Refresh data cache\n"
-                "  /produce [kinetic|narrative|bar_race|split] - Manual production run\n"
+                "  /produce [kinetic|narrative|bar_race|split|countdown] - Manual production run\n"
                 "  /skip    - Skip next queued story\n"
                 "  /help    - Show this message"
             )
