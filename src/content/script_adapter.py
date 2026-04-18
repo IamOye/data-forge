@@ -391,6 +391,11 @@ class ScriptAdapter:
         cta     = parts.get("cta", "")
 
         full_script = " ".join(filter(None, [hook, context, insight, cta]))
+        hook    = self._fix_proper_nouns(hook)
+        context = self._fix_proper_nouns(context)
+        insight = self._fix_proper_nouns(insight)
+        cta     = cta  # CTA is fixed, skip
+        full_script = self._fix_proper_nouns(full_script)
         word_count  = len(full_script.split()) if full_script.strip() else 0
         errors      = self._validate(hook, context, insight, cta, word_count)
 
@@ -480,6 +485,25 @@ class ScriptAdapter:
         except Exception as e:
             logger.warning("[dataforge] _score_script failed: %s", e)
             return {}
+
+    @staticmethod
+    def _fix_proper_nouns(text: str) -> str:
+        """Correct known hallucinated spellings of finance/crypto proper nouns."""
+        corrections = {
+            "Michael Sailor": "Michael Saylor",
+            "michael sailor": "Michael Saylor",
+            "Micheal Saylor": "Michael Saylor",
+            "Micheal Sailor": "Michael Saylor",
+            "Warren Buffet": "Warren Buffett",
+            "warren buffet": "Warren Buffett",
+            "Elon Musk": "Elon Musk",  # correct — included to normalise casing
+            "Satoshi Nakamato": "Satoshi Nakamoto",
+            "Jerome Powell": "Jerome Powell",  # correct
+            "Janet Yellen": "Janet Yellen",    # correct
+        }
+        for wrong, right in corrections.items():
+            text = text.replace(wrong, right)
+        return text
 
     @staticmethod
     def _error_result(metric_name: str, error: str) -> ScriptResult:
