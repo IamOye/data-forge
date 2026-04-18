@@ -662,6 +662,22 @@ class ProductionPipeline:
                 script_result.full_script, script_result.hook,
             )
 
+            # Write story to GSheet Data Queue
+            try:
+                from src.crawler.gsheet_sync import GSheetSync
+                gsheet = GSheetSync()
+                gsheet.write_story({
+                    "story_id":  story_id,
+                    "metric":    metric_name,
+                    "format":    "kinetic",
+                    "status":    "QUEUED",
+                    "hook":      script_result.hook,
+                    "source":    data_source,
+                })
+                logger.info("[dataforge] Step 4: GSheet write_story complete for %s", story_id)
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
+
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] Step 5: Generating voiceover...")
             from src.media.voiceover import VoiceoverGenerator
@@ -803,6 +819,22 @@ class ProductionPipeline:
                 self.db_path, story_id, "bar_race", data_source, metric_name,
                 0, 0, 0, script_result.full_script, script_result.hook,
             )
+
+            # Write story to GSheet Data Queue
+            try:
+                from src.crawler.gsheet_sync import GSheetSync
+                gsheet = GSheetSync()
+                gsheet.write_story({
+                    "story_id":  story_id,
+                    "metric":    metric_name,
+                    "format":    "bar_race",
+                    "status":    "QUEUED",
+                    "hook":      script_result.hook,
+                    "source":    data_source,
+                })
+                logger.info("[dataforge] Step 4: GSheet write_story complete for %s", story_id)
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
 
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] [bar_race] Step 5: Generating voiceover...")
@@ -988,6 +1020,22 @@ class ProductionPipeline:
                 script_result.full_script, script_result.hook,
             )
 
+            # Write story to GSheet Data Queue
+            try:
+                from src.crawler.gsheet_sync import GSheetSync
+                gsheet = GSheetSync()
+                gsheet.write_story({
+                    "story_id":  story_id,
+                    "metric":    metric_name,
+                    "format":    "split",
+                    "status":    "QUEUED",
+                    "hook":      script_result.hook,
+                    "source":    data_source,
+                })
+                logger.info("[dataforge] Step 4: GSheet write_story complete for %s", story_id)
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
+
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] [split] Step 5: Generating voiceover...")
             from src.media.voiceover import VoiceoverGenerator
@@ -1112,6 +1160,22 @@ class ProductionPipeline:
                 current_value, prev_value, pct_change,
                 script_result.full_script, script_result.hook,
             )
+
+            # Write story to GSheet Data Queue
+            try:
+                from src.crawler.gsheet_sync import GSheetSync
+                gsheet = GSheetSync()
+                gsheet.write_story({
+                    "story_id":  story_id,
+                    "metric":    metric_name,
+                    "format":    "narrative",
+                    "status":    "QUEUED",
+                    "hook":      script_result.hook,
+                    "source":    data_source,
+                })
+                logger.info("[dataforge] Step 4: GSheet write_story complete for %s", story_id)
+            except Exception as e:
+                logger.warning("[dataforge] Step 4: GSheet write_story failed (non-fatal): %s", e)
 
             # --- Step 5: Generate voiceover ---
             logger.info("[dataforge] [narrative] Step 5: Generating voiceover...")
