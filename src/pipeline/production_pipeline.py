@@ -913,74 +913,105 @@ class ProductionPipeline:
                 return result
             logger.info("[dataforge] Quota OK: %d/%d units used", units_used, YOUTUBE_DAILY_BUDGET)
 
-            # --- Step 1: Fetch World Bank GDP data ---
-            logger.info("[dataforge] [bar_race] Step 1: Fetching World Bank GDP data...")
+            # --- Step 1: Fetch crypto market cap history ---
+            logger.info("[dataforge] [bar_race] Step 1: Fetching crypto market cap history...")
             from src.data.data_fetcher import DataFetcher
             import pandas as pd
             import numpy as np
 
             fetcher = DataFetcher()
-            metric_name = "Global GDP Rankings"
-            data_source = "World Bank"
+            metric_name = "Crypto Market Cap Race"
+            data_source = "CoinGecko"
             df = None
 
             try:
-                logger.info('[dataforge] Calling fetch_world_bank(NY.GDP.MKTP.CD)...')
-                wb_df = fetcher.fetch_world_bank(
-                    indicator='NY.GDP.MKTP.CD',
-                    countries=['US', 'CN', 'JP', 'DE', 'GB', 'IN', 'FR', 'BR', 'CA', 'KR'],
-                    start_year=2010,
-                    end_year=2023,
-                )
-                if wb_df is not None and not wb_df.empty:
-                    logger.info('[dataforge] World Bank raw: %d rows, columns=%s',
-                                len(wb_df), list(wb_df.columns))
-                    pivot = wb_df.pivot_table(
-                        index='country', columns='year', values='value', aggfunc='first',
+                df = fetcher.fetch_crypto_market_cap_history(top_n=10, days=30)
+                if df is not None and not df.empty:
+                    logger.info(
+                        '[dataforge] CoinGecko market cap history: %d coins x %d days',
+                        len(df), len(df.columns),
                     )
-                    pivot.columns = [str(c) for c in pivot.columns]
-                    pivot = pivot.dropna(axis=1, how='all').dropna(axis=0, how='all')
-                    logger.info('[dataforge] World Bank pivot: %d countries x %d years',
-                                len(pivot), len(pivot.columns))
-                    if len(pivot) >= 3 and len(pivot.columns) >= 3:
-                        df = pivot
-                    else:
-                        logger.warning('[dataforge] World Bank pivot too small: %s', pivot.shape)
                 else:
-                    logger.warning('[dataforge] World Bank returned empty DataFrame')
+                    logger.warning('[dataforge] CoinGecko returned empty DataFrame')
+                    df = None
             except Exception as e:
-                logger.error("[dataforge] World Bank fetch failed: %s", e, exc_info=True)
+                logger.error("[dataforge] CoinGecko fetch failed: %s", e, exc_info=True)
+                df = None
 
             if df is None:
-                logger.warning("[dataforge] Using fallback GDP sample data")
-                countries_fb = [
-                    'USA', 'China', 'Japan', 'Germany', 'UK',
-                    'India', 'France', 'Brazil', 'Canada', 'S.Korea',
+                logger.warning("[dataforge] Using fallback crypto sample data")
+                coins_fb = [
+                    'Bitcoin', 'Ethereum', 'Tether', 'BNB', 'Solana',
+                    'XRP', 'USDC', 'Cardano', 'Avalanche', 'Dogecoin',
                 ]
-                years = [str(y) for y in range(2015, 2024)]
+                import datetime as _dt
+                days_fb = [
+                    (_dt.datetime.now() - _dt.timedelta(days=i)).strftime('%b %d')
+                    for i in range(29, -1, -1)
+                ]
                 np.random.seed(42)
+                base = [1.8e12, 4e11, 1.1e11, 9e10, 7e10, 6e10, 4e10, 2e10, 1.5e10, 1.2e10]
                 df = pd.DataFrame(
-                    np.random.uniform(1e12, 25e12, (len(countries_fb), len(years))),
-                    index=countries_fb, columns=years,
+                    {d: [b * (1 + np.random.uniform(-0.05, 0.05)) for b in base] for d in days_fb},
+                    index=coins_fb,
                 )
 
             logger.info("[dataforge] Step 1 complete: %d entities x %d periods", *df.shape)
 
-            # --- Step 2: News context ---
-            logger.info("[dataforge] [bar_race] Step 2: Fetching news context...")
+            # --- Step 2: Fetch news context for crypto ---
+            logger.info("[dataforge] [bar_race] Step 2: Fetching crypto news context...")
             try:
-                news = fetcher.fetch_news_context('global GDP economy', max_results=2)
+                news = fetcher.fetch_news_context('cryptocurrency bitcoin market', max_results=3)
                 news_headlines = [h if isinstance(h, str) else str(h) for h in news]
             except Exception:
                 news_headlines = []
+
+            # Build crypto summary for script generation
+            try:
+                latest_col = df.columns[-1]
+                prev_col = df.columns[-2] if len(df.columns) > 1 else df.columns[-1]
+                top_coin = df[latest_col].idxmax()
+                top_val = df[latest_col].max()
+                top_prev = df[prev_col].get(top_coin, top_val)
+                top_pct = ((top_val - top_prev) / top_prev * 100) if top_prev else 0
+
+                # Find biggest mover
+                df_pct = ((df[latest_col] - df[prev_col]) / df[prev_col].abs() * 100)
+                biggest_mover = df_pct.abs().idxmax()
+                biggest_pct = df_pct[biggest_mover]
+
+                script_metric = f"Crypto Market Cap — {top_coin} leads"
+                script_current = round(top_val / 1e9, 1)
+                script_prev = round(top_prev / 1e9, 1)
+                script_pct = round(top_pct, 2)
+                _sign = "+" if top_pct >= 0 else ""
+                news_headlines = [
+                    f"{top_coin} market cap: ${script_current}B ({_sign}{top_pct:.1f}% today)",
+                    f"Biggest mover: {biggest_mover} ({biggest_pct:+.1f}%)",
+                ] + news_headlines[:1]
+
+                logger.info(
+                    "[dataforge] Crypto summary: top=%s $%sB (%+.1f%%) mover=%s (%+.1f%%)",
+                    top_coin, script_current, top_pct, biggest_mover, biggest_pct,
+                )
+            except Exception as e:
+                logger.warning("[dataforge] Crypto summary failed: %s", e)
+                script_metric = "Crypto Market Cap Rankings"
+                script_current = 0
+                script_prev = 0
+                script_pct = 0
 
             # --- Step 3: Generate script ---
             logger.info("[dataforge] [bar_race] Step 3: Generating script...")
             from src.content.script_adapter import ScriptAdapter
             script_result = ScriptAdapter().generate(
-                metric_name=metric_name, current_value=0, prev_value=0,
-                pct_change=0, data_source=data_source,
-                news_context=news_headlines, story_type="bar_race",
+                metric_name=script_metric,
+                current_value=script_current,
+                prev_value=script_prev,
+                pct_change=script_pct,
+                data_source=data_source,
+                news_context=news_headlines,
+                story_type="bar_race",
             )
             if not script_result.is_valid:
                 result["error"] = f"Script invalid: {script_result.validation_errors}"
@@ -1058,19 +1089,20 @@ class ProductionPipeline:
             renderer = BarRaceRenderer(output_dir=RAW_DIR)
             video_path = renderer.render(
                 df=df,
-                title='Global GDP Rankings',
-                value_label='GDP (USD)',
+                title='Crypto Market Cap Race — Last 30 Days',
+                value_label='Market Cap (USD)',
                 duration_sec=vo_result.duration_seconds + 2.0,
                 top_n=10,
                 story_id=story_id,
-                source_credit='Source: World Bank',
+                source_credit='Source: CoinGecko',
             )
             logger.info("[dataforge] Step 6 complete: %s", video_path)
 
             # --- Steps 7-12: post-production ---
             # Override YouTube title for bar race (not from script hook)
-            years = list(df.columns)
-            script_result._youtube_title = f"Top 10 Economies by GDP: {years[0]}-{years[-1]}"
+            import datetime as _dt
+            _today = _dt.datetime.now().strftime("%b %d")
+            script_result._youtube_title = f"Crypto Market Cap Race: Last 30 Days | {_today}"
 
             return self._post_production(
                 story_id, video_path, vo_result.audio_path,

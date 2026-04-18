@@ -491,6 +491,78 @@ class DataFetcher:
     # Crypto — CoinGecko (no API key needed)
     # ------------------------------------------------------------------
 
+    def fetch_crypto_market_cap_history(self, top_n: int = 10, days: int = 30) -> 'pd.DataFrame | None':
+        """
+        Fetch daily market cap history for top N coins over last N days.
+        Uses CoinGecko /coins/{id}/market_chart endpoint.
+        Returns a DataFrame with coins as rows and dates as columns (market cap values).
+        Falls back to None on failure.
+        """
+        try:
+            import pandas as pd
+
+            # Step 1: Get top coins by current market cap
+            url = f'{COINGECKO_BASE_URL}/coins/markets'
+            params = {
+                'vs_currency': 'usd',
+                'order': 'market_cap_desc',
+                'per_page': top_n,
+                'page': 1,
+            }
+            resp = requests.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            coins = resp.json()
+
+            if not coins:
+                logger.warning('[dataforge] fetch_crypto_market_cap_history: no coins returned')
+                return None
+
+            logger.info('[dataforge] fetch_crypto_market_cap_history: fetching history for %d coins', len(coins))
+
+            # Step 2: Fetch market cap history for each coin
+            coin_data = {}
+            for coin in coins:
+                coin_id = coin['id']
+                coin_name = coin['name']
+                try:
+                    hist_url = f'{COINGECKO_BASE_URL}/coins/{coin_id}/market_chart'
+                    hist_params = {
+                        'vs_currency': 'usd',
+                        'days': days,
+                        'interval': 'daily',
+                    }
+                    hist_resp = requests.get(hist_url, params=hist_params, timeout=15)
+                    hist_resp.raise_for_status()
+                    hist_data = hist_resp.json()
+                    market_caps = hist_data.get('market_caps', [])
+                    if market_caps:
+                        dates = [
+                            datetime.fromtimestamp(mc[0] / 1000, tz=timezone.utc).strftime('%b %d')
+                            for mc in market_caps
+                        ]
+                        values = [mc[1] for mc in market_caps]
+                        coin_data[coin_name] = dict(zip(dates, values))
+                    time.sleep(0.5)  # CoinGecko rate limit
+                except Exception as e:
+                    logger.warning('[dataforge] fetch_crypto_market_cap_history: failed for %s: %s', coin_id, e)
+                    continue
+
+            if not coin_data:
+                logger.warning('[dataforge] fetch_crypto_market_cap_history: no coin data collected')
+                return None
+
+            df = pd.DataFrame(coin_data).T
+            df = df.dropna(axis=1, how='all').dropna(axis=0, how='all')
+            logger.info(
+                '[dataforge] fetch_crypto_market_cap_history: %d coins x %d days',
+                len(df), len(df.columns),
+            )
+            return df
+
+        except Exception as e:
+            logger.error('[dataforge] fetch_crypto_market_cap_history failed: %s', e, exc_info=True)
+            return None
+
     def fetch_crypto_movers(self, top_n: int = 10) -> list:
         """
         Fetch top coins by market cap from CoinGecko, sorted by 24h % change.
