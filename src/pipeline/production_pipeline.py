@@ -144,6 +144,17 @@ def _ensure_tables(db_path: str) -> None:
                 word_count      INTEGER,
                 recorded_at     TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS title_variants (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                story_id        TEXT NOT NULL,
+                variant_1       TEXT,
+                variant_2       TEXT,
+                variant_3       TEXT,
+                selected_title  TEXT,
+                selected_rank   INTEGER,
+                format          TEXT,
+                recorded_at     TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT
@@ -431,6 +442,80 @@ def _merge_audio_video(
     return output_path
 
 
+def _generate_title_variants(
+    metric_name: str,
+    hook: str,
+    full_script: str,
+    pct_change: float,
+    api_key: str,
+) -> list[str]:
+    """
+    Generate 3 ranked YouTube title variants for a video using Claude.
+    Returns list of 3 title strings, best first. Falls back to hook-based
+    title on any failure.
+
+    Title rules:
+    - Max 80 characters each
+    - Must include the key number or % change
+    - Palki Sharma style: punchy, urgent, specific
+    - No clickbait words: 'shocking', 'unbelievable', 'you won't believe'
+    - Each variant tries a different angle:
+        Variant 1: Person-first (human story angle)
+        Variant 2: Number-first (data shock angle)
+        Variant 3: Question or stakes angle
+    """
+    try:
+        import anthropic as _anthropic
+        import json as _json
+        import datetime as _dt
+
+        date_suffix = _dt.datetime.now().strftime("%b %d")
+
+        prompt = (
+            f"Generate 3 ranked YouTube Shorts title variants for this finance video.\n\n"
+            f"Metric: {metric_name}\n"
+            f"Change: {pct_change:+.2f}%\n"
+            f"Hook: {hook}\n"
+            f"Script excerpt: {full_script[:150]}\n\n"
+            f"Rules:\n"
+            f"- Max 80 characters each (including '| {date_suffix}' suffix which will be appended)\n"
+            f"- Must include the specific % change or dollar figure\n"
+            f"- Palki Sharma style: punchy, urgent, specific\n"
+            f"- No words: shocking, unbelievable, incredible, insane\n"
+            f"- Variant 1: person-first human story angle\n"
+            f"- Variant 2: number-first data shock angle\n"
+            f"- Variant 3: question or stakes angle\n"
+            f"- Rank them best to worst for CTR\n\n"
+            f"Respond ONLY with JSON, no markdown:\n"
+            f'{{ "variants": ["title1", "title2", "title3"] }}'
+        )
+
+        client = _anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        data = _json.loads(raw)
+        variants = data.get("variants", [])
+
+        if len(variants) >= 3:
+            logger.info(
+                "[dataforge] Title variants generated: %s | %s | %s",
+                variants[0][:40], variants[1][:40], variants[2][:40],
+            )
+            return variants[:3]
+
+        logger.warning("[dataforge] _generate_title_variants: fewer than 3 variants returned")
+        return []
+
+    except Exception as e:
+        logger.warning("[dataforge] _generate_title_variants failed: %s", e)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # ProductionPipeline
 # ---------------------------------------------------------------------------
@@ -483,6 +568,7 @@ class ProductionPipeline:
         data_source: str,
         script_result: Any,
         result: dict[str, Any],
+        format_type: str = "kinetic",
     ) -> dict[str, Any]:
         """Steps 7-12: merge, upload, DB, GSheet, Telegram."""
 
@@ -503,9 +589,50 @@ class ProductionPipeline:
         logger.info("[dataforge] Step 8: Uploading to YouTube...")
         try:
             import datetime as _dt
-            _base_title = getattr(script_result, '_youtube_title', None) or script_result.hook[:90]
             _date_suffix = _dt.datetime.now().strftime("%b %d")
-            video_title = f"{_base_title} | {_date_suffix}"
+            _base_title = getattr(script_result, '_youtube_title', None) or script_result.hook[:90]
+
+            # Generate 3 title variants and pick the best
+            _api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            _variants = _generate_title_variants(
+                metric_name=metric_name,
+                hook=script_result.hook,
+                full_script=script_result.full_script,
+                pct_change=getattr(script_result, 'pct_change', 0.0),
+                api_key=_api_key,
+            ) if _api_key else []
+
+            if _variants:
+                video_title = f"{_variants[0]} | {_date_suffix}"
+            else:
+                video_title = f"{_base_title} | {_date_suffix}"
+
+            # Store all variants in DB
+            try:
+                _conn = sqlite3.connect(self.db_path)
+                try:
+                    _conn.execute(
+                        """INSERT INTO title_variants
+                           (story_id, variant_1, variant_2, variant_3,
+                            selected_title, selected_rank, format, recorded_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            story_id,
+                            _variants[0] if len(_variants) > 0 else None,
+                            _variants[1] if len(_variants) > 1 else None,
+                            _variants[2] if len(_variants) > 2 else None,
+                            video_title,
+                            1,
+                            format_type,
+                            datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                    _conn.commit()
+                    logger.info("[dataforge] Step 8: title variants saved for %s", story_id)
+                finally:
+                    _conn.close()
+            except Exception as _e:
+                logger.warning("[dataforge] Step 8: title variants save failed (non-fatal): %s", _e)
             video_description = (
                 f"{script_result.full_script}\n\n"
                 f"Source: {data_source}\n"
@@ -752,6 +879,7 @@ class ProductionPipeline:
             return self._post_production(
                 story_id, video_path, vo_result.audio_path,
                 metric_name, data_source, script_result, result,
+                format_type="kinetic",
             )
 
         except Exception as e:
@@ -947,6 +1075,7 @@ class ProductionPipeline:
             return self._post_production(
                 story_id, video_path, vo_result.audio_path,
                 metric_name, data_source, script_result, result,
+                format_type="bar_race",
             )
 
         except Exception as e:
@@ -1174,6 +1303,7 @@ class ProductionPipeline:
             return self._post_production(
                 story_id, video_path, vo_result.audio_path,
                 metric_name, data_source, script_result, result,
+                format_type="split",
             )
 
         except Exception as e:
@@ -1354,6 +1484,7 @@ class ProductionPipeline:
             return self._post_production(
                 story_id, video_path, vo_result.audio_path,
                 metric_name, data_source, script_result, result,
+                format_type="narrative",
             )
 
         except Exception as e:
