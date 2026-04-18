@@ -76,7 +76,7 @@ PERIOD_Y = 80         # Period label y
 BAR_AREA_TOP = 200    # Top of bar area
 BAR_AREA_BOTTOM = 1780  # Bottom of bar area
 BAR_LEFT = 300        # Left edge of bars (entity labels go left of this)
-BAR_RIGHT = 1020      # Right edge of max bar (80% of frame)
+BAR_RIGHT = 920       # Right edge of max bar — leaves 160px for value labels
 BAR_PADDING = 12      # Vertical padding between bars
 
 
