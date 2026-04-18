@@ -598,40 +598,48 @@ class ProductionPipeline:
             logger.info("[dataforge] [kinetic] Step 1: Fetching data...")
             from src.data.data_fetcher import DataFetcher
             fetcher = DataFetcher()
-            dp = None
+            story_data = None
+            news_context = []
 
-            try:
-                dp = fetcher.fetch_fred_daily_story()
-                if dp is None:
-                    raise ValueError('FRED returned None')
-                logger.info('[dataforge] Using FRED story: %s', dp.metric_name)
-            except Exception as e:
-                logger.warning('[dataforge] FRED failed (%s), falling back to crypto', e)
-                try:
-                    movers = fetcher.fetch_crypto_movers(top_n=20)
-                    dp = movers[0] if movers else None
-                except Exception as e2:
-                    logger.error("[dataforge] Crypto also failed: %s", e2, exc_info=True)
+            # Try news-triggered story first (most current and human)
+            news_story = fetcher.fetch_news_triggered_story()
+            if news_story and news_story.get('data_point'):
+                dp = news_story['data_point']
+                story_data = dp
+                data_source = dp.data_source
+                metric_name = dp.metric_name
+                news_context = [news_story['headline']]
+                logger.info(
+                    "[dataforge] [kinetic] Using news-triggered story: %s | %s",
+                    news_story['headline'][:60], dp.metric_name,
+                )
+            else:
+                # Fallback: FRED daily rotation
+                logger.info("[dataforge] [kinetic] News trigger failed — falling back to FRED rotation")
+                daily_story = fetcher.fetch_fred_daily_story()
+                if daily_story:
+                    story_data = daily_story
+                    data_source = daily_story.data_source
+                    metric_name = daily_story.metric_name
+                    news_context = fetcher.fetch_news_context(metric_name, max_results=2)
+                else:
+                    # Final fallback: stock movers
+                    movers = fetcher.fetch_daily_movers(top_n=5)
+                    if not movers:
+                        logger.error("[dataforge] [kinetic] All data sources failed")
+                        result["error"] = "All data sources failed"
+                        return result
+                    story_data = movers[0]
+                    data_source = story_data.data_source
+                    metric_name = story_data.metric_name
+                    news_context = fetcher.fetch_news_context(metric_name, max_results=2)
 
-            if dp is None:
-                result["error"] = "No data from any source (FRED + crypto failed)"
-                logger.error("[dataforge] %s", result["error"])
-                return result
-
-            metric_name = dp.metric_name
-            current_value = dp.current_value
-            prev_value = dp.prev_value
-            pct_change = dp.pct_change
-            data_source = dp.data_source
-            logger.info("[dataforge] Step 1 complete: %s (%+.2f%%)", metric_name, pct_change)
-
-            # --- Step 2: News context ---
-            logger.info("[dataforge] Step 2: Fetching news context...")
-            try:
-                news = fetcher.fetch_news_context(metric_name, max_results=3)
-                news_headlines = [h if isinstance(h, str) else str(h) for h in news]
-            except Exception:
-                news_headlines = []
+            dp = story_data
+            current_value = story_data.current_value
+            prev_value = story_data.prev_value
+            pct_change = story_data.pct_change
+            news_headlines = [h if isinstance(h, str) else str(h) for h in news_context]
+            logger.info("[dataforge] [kinetic] Step 1 complete: %s (%+.2f%%)", metric_name, pct_change)
 
             # --- Step 3: Generate script ---
             logger.info("[dataforge] Step 3: Generating script...")

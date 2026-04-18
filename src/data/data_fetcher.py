@@ -742,6 +742,145 @@ class DataFetcher:
                            series_id, e)
             return None
 
+    def fetch_news_triggered_story(self) -> 'dict | None':
+        """
+        Use today's top financial headlines to select the most relevant FRED
+        series, then fetch the data. Returns a dict with headline context and
+        DataPoint, or None on failure.
+
+        Flow:
+          1. Pull top 5 financial headlines from NewsAPI
+          2. Send to Claude to pick the most financially significant headline
+             and the best matching FRED series
+          3. Fetch FRED data for that series
+          4. Return combined result for script generation
+
+        Returns:
+            dict with keys:
+                'headline'   — the selected headline string
+                'fred_series' — FRED series ID used
+                'data_point' — DataPoint namedtuple
+            or None on any failure.
+        """
+        try:
+            import anthropic
+            import json
+
+            # Step 1: Fetch top financial headlines
+            if not NEWS_API_KEY:
+                logger.warning('[dataforge] NEWS_API_KEY not set — cannot trigger news story')
+                return None
+
+            url = 'https://newsapi.org/v2/top-headlines'
+            params = {
+                'category': 'business',
+                'language': 'en',
+                'country': 'us',
+                'pageSize': 5,
+                'apiKey': NEWS_API_KEY,
+            }
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            articles = resp.json().get('articles', [])
+            headlines = [a.get('title', '') for a in articles if a.get('title')]
+
+            if not headlines:
+                logger.warning('[dataforge] NewsAPI returned no headlines')
+                return None
+
+            logger.info('[dataforge] fetch_news_triggered_story: %d headlines fetched', len(headlines))
+
+            # Step 2: Ask Claude to pick the best headline and matching FRED series
+            FRED_OPTIONS = {
+                'FEDFUNDS':         'Fed Funds Rate',
+                'CPIAUCSL':         'US Inflation (CPI)',
+                'UNRATE':           'US Unemployment Rate',
+                'MORTGAGE30US':     '30-Year Mortgage Rate',
+                'T10Y2Y':           'Yield Curve Spread',
+                'DCOILWTICO':       'WTI Crude Oil',
+                'GOLDAMGBD228NLBM': 'Gold Price',
+                'DEXUSEU':          'EUR/USD Exchange Rate',
+                'SP500':            'S&P 500 Index',
+                'NASDAQCOM':        'NASDAQ Composite',
+                'VIXCLS':           'VIX Fear Index',
+                'BAMLH0A0HYM2':     'High Yield Spread',
+                'UMCSENT':          'Consumer Sentiment',
+                'MORTGAGE15US':     '15-Year Mortgage Rate',
+                'MEDLISPRIPERSQUFEE': 'Median Home Price per sq ft',
+            }
+
+            fred_list = '\n'.join(f'  {k}: {v}' for k, v in FRED_OPTIONS.items())
+            headlines_text = '\n'.join(f'  {i+1}. {h}' for i, h in enumerate(headlines))
+
+            claude_prompt = (
+                f"Today's top financial headlines:\n{headlines_text}\n\n"
+                f"Available FRED data series:\n{fred_list}\n\n"
+                f"Task: Pick the single most financially significant headline "
+                f"and the single FRED series that best provides the hard data "
+                f"behind that story.\n\n"
+                f"Respond ONLY with valid JSON, no markdown:\n"
+                f'{{ "headline": "exact headline text", "fred_series": "SERIES_ID" }}'
+            )
+
+            anthropic_key = os.environ.get('ANTHROPIC_API_KEY', '')
+            if not anthropic_key:
+                logger.warning('[dataforge] ANTHROPIC_API_KEY not set — cannot select news story')
+                return None
+
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            message = client.messages.create(
+                model='claude-sonnet-4-5',
+                max_tokens=200,
+                messages=[{'role': 'user', 'content': claude_prompt}],
+            )
+            raw = message.content[0].text.strip()
+            raw = raw.replace('```json', '').replace('```', '').strip()
+            selection = json.loads(raw)
+
+            selected_headline = selection.get('headline', '')
+            fred_series = selection.get('fred_series', '')
+
+            if not selected_headline or fred_series not in FRED_OPTIONS:
+                logger.warning('[dataforge] Claude selection invalid: %s', selection)
+                return None
+
+            logger.info(
+                '[dataforge] fetch_news_triggered_story: headline=%r fred=%s',
+                selected_headline[:60], fred_series,
+            )
+
+            # Step 3: Fetch FRED data for selected series
+            df = self.fetch_fred_series(fred_series, periods=2)
+            if df is None or len(df) < 2:
+                logger.warning('[dataforge] FRED %s returned < 2 periods', fred_series)
+                return None
+
+            current = float(df.iloc[-1]['value'])
+            previous = float(df.iloc[-2]['value'])
+            pct = ((current - previous) / abs(previous) * 100) if previous else 0.0
+
+            label = FRED_OPTIONS[fred_series]
+            dp = DataPoint(
+                metric_name=label,
+                current_value=current,
+                prev_value=previous,
+                pct_change=round(pct, 2),
+                data_source='FRED',
+                date=str(datetime.now(timezone.utc).date()),
+                currency='%',
+                extra_meta={'series_id': fred_series, 'headline': selected_headline},
+            )
+
+            return {
+                'headline': selected_headline,
+                'fred_series': fred_series,
+                'data_point': dp,
+            }
+
+        except Exception as e:
+            logger.error('[dataforge] fetch_news_triggered_story failed: %s', e, exc_info=True)
+            return None
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
