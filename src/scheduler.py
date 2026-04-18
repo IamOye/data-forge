@@ -174,11 +174,108 @@ def production_job(slot: str, format_type: str) -> None:
 
 
 def analytics_job() -> None:
-    """Placeholder for Phase 3 analytics harvest."""
+    """
+    Harvest YouTube analytics for videos at 24h, 48h, and 7-day checkpoints.
+    Writes results to video_analytics table and updates views_24h in video_log.
+    """
     try:
-        logger.info("[dataforge] analytics_job: placeholder -- Phase 3")
+        import sqlite3
+        from datetime import datetime, timezone, timedelta
+        from googleapiclient.discovery import build
+
+        logger.info("[dataforge] analytics_job: starting harvest")
+
+        db_path = os.environ.get("DATAFORGE_DB_PATH", "data/dataforge.db")
+
+        # Load credentials using same function as uploader
+        from src.pipeline.production_pipeline import _load_credentials
+        creds = _load_credentials()
+        yt_analytics = build("youtubeAnalytics", "v2", credentials=creds)
+
+        now = datetime.now(timezone.utc)
+        checkpoints = {
+            "24h": timedelta(hours=24),
+            "48h": timedelta(hours=48),
+            "7d":  timedelta(days=7),
+        }
+
+        conn = sqlite3.connect(db_path)
+        try:
+            for checkpoint, delta in checkpoints.items():
+                window_start = now - delta - timedelta(hours=1)
+                window_end   = now - delta + timedelta(hours=1)
+
+                rows = conn.execute(
+                    """SELECT story_id, youtube_video_id, metric_name
+                       FROM video_log
+                       WHERE uploaded_at BETWEEN ? AND ?
+                       AND youtube_video_id IS NOT NULL
+                       AND upload_status = 'UPLOADED'""",
+                    (window_start.isoformat(), window_end.isoformat()),
+                ).fetchall()
+
+                if not rows:
+                    logger.info("[dataforge] analytics_job: no videos in %s window", checkpoint)
+                    continue
+
+                for story_id, video_id, metric_name in rows:
+                    try:
+                        # Check if we already recorded this checkpoint
+                        exists = conn.execute(
+                            "SELECT 1 FROM video_analytics WHERE story_id=? AND checkpoint=?",
+                            (story_id, checkpoint),
+                        ).fetchone()
+                        if exists:
+                            continue
+
+                        start_date = (now - delta).strftime("%Y-%m-%d")
+                        end_date   = now.strftime("%Y-%m-%d")
+
+                        response = yt_analytics.reports().query(
+                            ids="channel==MINE",
+                            startDate=start_date,
+                            endDate=end_date,
+                            metrics="views,estimatedMinutesWatched,likes",
+                            dimensions="video",
+                            filters=f"video=={video_id}",
+                        ).execute()
+
+                        rows_data = response.get("rows", [])
+                        if not rows_data:
+                            logger.info("[dataforge] analytics_job: no data for %s at %s", video_id, checkpoint)
+                            continue
+
+                        _, views, watch_time, likes = rows_data[0]
+                        views      = int(views)
+                        watch_time = float(watch_time)
+                        likes      = int(likes)
+
+                        conn.execute(
+                            """INSERT INTO video_analytics
+                               (story_id, youtube_video_id, metric_name, checkpoint,
+                                views, watch_time_mins, likes, recorded_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (story_id, video_id, metric_name, checkpoint,
+                             views, watch_time, likes, now.isoformat()),
+                        )
+                        if checkpoint == "24h":
+                            conn.execute(
+                                "UPDATE video_log SET views_24h=? WHERE story_id=?",
+                                (views, story_id),
+                            )
+                        conn.commit()
+                        logger.info(
+                            "[dataforge] analytics_job: %s %s views=%d likes=%d watch=%.1fmin",
+                            story_id, checkpoint, views, likes, watch_time,
+                        )
+                    except Exception as e:
+                        logger.warning("[dataforge] analytics_job: error for %s: %s", video_id, e)
+        finally:
+            conn.close()
+
+        logger.info("[dataforge] analytics_job: harvest complete")
     except Exception as e:
-        logger.error("[dataforge] analytics_job failed: %s", e)
+        logger.error("[dataforge] analytics_job failed: %s", e, exc_info=True)
 
 
 def quota_reset_job() -> None:
@@ -356,14 +453,29 @@ def _setup_telegram_bot() -> threading.Thread | None:
             """Show total uploads and views."""
             try:
                 conn = _db_connect()
-                row = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(views_24h), 0) FROM video_log"
+                total_row = conn.execute(
+                    "SELECT COUNT(*) FROM video_log WHERE upload_status='UPLOADED'"
                 ).fetchone()
+                total = total_row[0]
+
+                top_rows = conn.execute(
+                    """SELECT vl.youtube_title, va.views, va.likes, va.watch_time_mins
+                       FROM video_analytics va
+                       JOIN video_log vl ON vl.story_id = va.story_id
+                       WHERE va.checkpoint = '24h'
+                       ORDER BY va.views DESC
+                       LIMIT 5"""
+                ).fetchall()
                 conn.close()
-                total, views = row
-                await update.message.reply_text(
-                    f"Total uploads: {total}\nTotal views (24h): {views:,}"
-                )
+
+                msg = f"Total uploads: {total}\n\nTop 5 by views (24h):\n"
+                if top_rows:
+                    for i, (title, views, likes, watch) in enumerate(top_rows, 1):
+                        short_title = (title or "Unknown")[:40]
+                        msg += f"{i}. {short_title}\n   👁 {views:,} views | ❤️ {likes} likes | ⏱ {watch:.1f}min\n"
+                else:
+                    msg += "No analytics data yet — check back after 24h.\n"
+                await update.message.reply_text(msg)
             except Exception as e:
                 await update.message.reply_text(f"Error: {e}")
 

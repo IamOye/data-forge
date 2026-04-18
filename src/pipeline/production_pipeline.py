@@ -118,6 +118,18 @@ def _ensure_tables(db_path: str) -> None:
                 views_24h         INTEGER,
                 uploaded_at       TEXT
             );
+            CREATE TABLE IF NOT EXISTS video_analytics (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                story_id        TEXT NOT NULL,
+                youtube_video_id TEXT NOT NULL,
+                metric_name     TEXT,
+                format          TEXT,
+                checkpoint      TEXT NOT NULL,
+                views           INTEGER DEFAULT 0,
+                watch_time_mins REAL DEFAULT 0,
+                likes           INTEGER DEFAULT 0,
+                recorded_at     TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT
