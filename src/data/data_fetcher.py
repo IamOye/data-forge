@@ -814,6 +814,116 @@ class DataFetcher:
                            series_id, e)
             return None
 
+    def fetch_us_treasury_yields(self, maturity: str = '10y') -> 'DataPoint | None':
+        """
+        Fetch daily US Treasury yield curve rates from the US Treasury Fiscal Data API.
+        No API key required.
+
+        Args:
+            maturity: One of '1m', '3m', '6m', '1y', '2y', '5y', '7y', '10y', '20y', '30y'
+
+        Returns:
+            DataPoint with current yield vs prior day, or None on failure.
+        """
+        MATURITY_LABELS = {
+            '1m':  ('BC_1MONTH',  '1-Month T-Bill Yield'),
+            '3m':  ('BC_3MONTH',  '3-Month T-Bill Yield'),
+            '6m':  ('BC_6MONTH',  '6-Month T-Bill Yield'),
+            '1y':  ('BC_1YEAR',   '1-Year Treasury Yield'),
+            '2y':  ('BC_2YEAR',   '2-Year Treasury Yield'),
+            '5y':  ('BC_5YEAR',   '5-Year Treasury Yield'),
+            '7y':  ('BC_7YEAR',   '7-Year Treasury Yield'),
+            '10y': ('BC_10YEAR',  '10-Year Treasury Yield'),
+            '20y': ('BC_20YEAR',  '20-Year Treasury Yield'),
+            '30y': ('BC_30YEAR',  '30-Year Treasury Yield'),
+        }
+
+        if maturity not in MATURITY_LABELS:
+            logger.error('[dataforge] fetch_us_treasury_yields: unknown maturity %s', maturity)
+            return None
+
+        field_name, label = MATURITY_LABELS[maturity]
+
+        try:
+            url = 'https://api.fiscaldata.treasury.gov/services/api/v1/accounting/od/avg_interest_rates'
+            # Use the daily par yield curve rates endpoint instead
+            url = (
+                'https://api.fiscaldata.treasury.gov/services/api/v1/'
+                'accounting/od/avg_interest_rates'
+            )
+            # Daily Treasury Par Yield Curve Rates
+            yield_url = (
+                'https://home.treasury.gov/resource-center/data-chart-center/'
+                'interest-rates/daily-treasury-rates.csv/all/all?'
+                'type=daily_treasury_yield_curve&field_tdr_date_value=all'
+                '&page&_format=csv'
+            )
+
+            # Use fiscaldata API — cleaner JSON, no scraping
+            api_url = 'https://api.fiscaldata.treasury.gov/services/api/v1/accounting/od/avg_interest_rates'
+            params = {
+                'fields': 'record_date,security_type_desc,avg_interest_rate_amt',
+                'filter': 'security_type_desc:in:(Treasury Bills,Treasury Notes,Treasury Bonds,Treasury Inflation-Protected Securities)',
+                'sort': '-record_date',
+                'page[size]': 20,
+            }
+            resp = requests.get(api_url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            records = data.get('data', [])
+
+            if not records:
+                logger.warning('[dataforge] fetch_us_treasury_yields: no records returned')
+                return None
+
+            # Map maturity to security type for avg_interest_rates endpoint
+            MATURITY_TO_TYPE = {
+                '1m':  'Treasury Bills',
+                '3m':  'Treasury Bills',
+                '6m':  'Treasury Bills',
+                '1y':  'Treasury Bills',
+                '2y':  'Treasury Notes',
+                '5y':  'Treasury Notes',
+                '7y':  'Treasury Notes',
+                '10y': 'Treasury Notes',
+                '20y': 'Treasury Bonds',
+                '30y': 'Treasury Bonds',
+            }
+            target_type = MATURITY_TO_TYPE[maturity]
+            filtered = [r for r in records if r.get('security_type_desc') == target_type]
+
+            if len(filtered) < 2:
+                logger.warning('[dataforge] fetch_us_treasury_yields: < 2 records for %s', target_type)
+                return None
+
+            current = float(filtered[0]['avg_interest_rate_amt'])
+            previous = float(filtered[1]['avg_interest_rate_amt'])
+            pct = ((current - previous) / abs(previous) * 100) if previous else 0.0
+            record_date = filtered[0]['record_date']
+
+            dp = DataPoint(
+                metric_name=label,
+                current_value=round(current, 3),
+                prev_value=round(previous, 3),
+                pct_change=round(pct, 2),
+                data_source='US Treasury',
+                date=record_date,
+                currency='%',
+                extra_meta={
+                    'maturity': maturity,
+                    'security_type': target_type,
+                },
+            )
+            logger.info(
+                '[dataforge] fetch_us_treasury_yields: %s = %.3f%% (prev %.3f%%, %+.2f%%)',
+                label, current, previous, pct,
+            )
+            return dp
+
+        except Exception as e:
+            logger.error('[dataforge] fetch_us_treasury_yields failed: %s', e, exc_info=True)
+            return None
+
     def fetch_news_triggered_story(self) -> 'dict | None':
         """
         Use today's top financial headlines to select the most relevant FRED
@@ -1044,6 +1154,13 @@ def test_data_fetcher():
     headlines = fetcher.fetch_news_context('Apple stock', max_results=2)
     for h in headlines:
         print(f'  {h}')
+
+    print('\n--- US Treasury Yields (10Y) ---')
+    treasury = fetcher.fetch_us_treasury_yields('10y')
+    if treasury:
+        print(f'  {treasury.metric_name}: {treasury.current_value}% ({treasury.pct_change:+.2f}%)')
+    else:
+        print('  No Treasury data returned')
 
     print('\n[dataforge] data_fetcher smoke test complete.')
 
