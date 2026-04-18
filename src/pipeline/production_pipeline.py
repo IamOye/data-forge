@@ -476,7 +476,10 @@ class ProductionPipeline:
         # --- Step 8: Upload to YouTube ---
         logger.info("[dataforge] Step 8: Uploading to YouTube...")
         try:
-            video_title = getattr(script_result, '_youtube_title', None) or script_result.hook[:100]
+            import datetime as _dt
+            _base_title = getattr(script_result, '_youtube_title', None) or script_result.hook[:90]
+            _date_suffix = _dt.datetime.now().strftime("%b %d")
+            video_title = f"{_base_title} | {_date_suffix}"
             video_description = (
                 f"{script_result.full_script}\n\n"
                 f"Source: {data_source}\n"
