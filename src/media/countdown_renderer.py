@@ -55,7 +55,7 @@ RANK_BOX_W = 90
 
 class CountdownRenderer:
     REVEAL_FRAMES = 8
-    HOLD_FRAMES = 45
+    HOLD_FRAMES = 30
     FINAL_HOLD_FRAMES = 30
 
     def __init__(self, output_dir=OUTPUT_DIR):
@@ -107,7 +107,8 @@ class CountdownRenderer:
 
         frames_per_item = self.REVEAL_FRAMES + self.HOLD_FRAMES
         total_frames = n * frames_per_item + self.FINAL_HOLD_FRAMES
-        duration_frames = int(duration_sec * RENDER_FPS)
+        min_frames_needed = n * (self.REVEAL_FRAMES + self.HOLD_FRAMES) + self.FINAL_HOLD_FRAMES
+        duration_frames = max(int(duration_sec * RENDER_FPS), min_frames_needed + int(RENDER_FPS * 3))
         total_frames = max(total_frames, duration_frames)
 
         logger.info(
