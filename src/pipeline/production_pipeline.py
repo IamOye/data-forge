@@ -1178,6 +1178,8 @@ class ProductionPipeline:
                         val_str = f"${mcap / 1_000_000:.1f}M"
                     else:
                         val_str = f"${mcap:,.0f}"
+                    if mcap < 20_000_000_000:
+                        continue
                     sign = '+' if pct >= 0 else ''
                     items.append({
                         'name': coin.get('name', ''),
